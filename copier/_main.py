@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import warnings
+import yaml
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from contextvars import ContextVar
@@ -369,8 +370,6 @@ class Worker:
         Supports multi-profile answers files. If a profile is specified, the answers
         will be organized under that profile.
         """
-        from ._user_data import save_answersfile_data
-
         answers: AnyByStrDict = {}
         commit = self.template.commit
         src = self.template.url
@@ -388,12 +387,42 @@ class Worker:
             and isinstance(v, JSONSerializable)
         )
 
-        return save_answersfile_data(
-            self.subproject.local_abspath,
-            self.answers_relpath,
-            answers,
-            profile=self.profile,
-        )
+        existing_data: AnyByStrDict = {}
+        try:
+            existing_file = Path(
+                self.subproject.local_abspath, self.subproject.answers_relpath
+            )
+            with existing_file.open("rb") as fd:
+                existing = yaml.safe_load(fd)
+                if existing and isinstance(existing, dict):
+                    existing_data = existing
+        except (FileNotFoundError, IsADirectoryError):
+            pass
+
+        if self.profile is None:
+            if "_profiles" in existing_data:
+                default_profile = existing_data.get("_default")
+                if default_profile:
+                    existing_data["_profiles"][default_profile] = answers
+                else:
+                    existing_data["_default"] = "default"
+                    existing_data["_profiles"] = {"default": answers}
+                return existing_data
+            return answers
+        else:
+            if "_profiles" not in existing_data:
+                if existing_data:
+                    existing_data = {
+                        "_default": self.profile,
+                        "_profiles": {"default": existing_data},
+                    }
+                else:
+                    existing_data = {"_profiles": {}, "_default": self.profile}
+            else:
+                if "_default" not in existing_data or not existing_data["_default"]:
+                    existing_data["_default"] = self.profile
+            existing_data["_profiles"][self.profile] = answers
+            return existing_data
 
     def _execute_tasks(self, tasks: Sequence[Task]) -> None:
         """Run the given tasks.

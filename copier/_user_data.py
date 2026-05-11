@@ -671,13 +671,14 @@ def save_answersfile_data(
         if "_profiles" not in existing_data:
             if existing_data:
                 existing_data = {
-                    "_default": "default",
+                    "_default": profile,
                     "_profiles": {"default": existing_data},
                 }
             else:
-                existing_data = {"_profiles": {}}
-        if "_default" not in existing_data or not existing_data["_default"]:
-            existing_data["_default"] = profile
+                existing_data = {"_profiles": {}, "_default": profile}
+        else:
+            if "_default" not in existing_data or not existing_data["_default"]:
+                existing_data["_default"] = profile
         existing_data["_profiles"][profile] = answers
 
     if write:
