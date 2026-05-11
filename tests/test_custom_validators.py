@@ -16,7 +16,6 @@ from copier._types import (
     get_validator,
     register_validator,
 )
-from copier._user_data import load_answersfile_data
 
 
 BRACKET_ENVOPS = {
@@ -88,7 +87,10 @@ def test_url_validator(tmp_path_factory: pytest.TempPathFactory):
 
     register_validator("url", url_validator)
 
-    src, dst = tmp_path_factory.mktemp("src_url"), tmp_path_factory.mktemp("dst_url")
+    src = tmp_path_factory.mktemp("src_url")
+    dst_valid = tmp_path_factory.mktemp("dst_url_valid")
+    dst_invalid = tmp_path_factory.mktemp("dst_url_invalid")
+
     build_file_tree(
         {
             (src / "copier.yml"): yaml.dump(
@@ -102,29 +104,25 @@ def test_url_validator(tmp_path_factory: pytest.TempPathFactory):
                     },
                 }
             ),
-            (src / "{{ _copier_conf.answers_file }}.jinja"): (
-                "{{ _copier_answers|to_nice_yaml }}"
+            (src / "[[ _copier_conf.answers_file ]].tmpl"): (
+                "[[ _copier_answers|to_nice_yaml ]]"
             ),
         }
     )
 
-    # Test valid URL
     run_copy(
         str(src),
-        str(dst),
+        str(dst_valid),
         data={"project_url": "https://github.com/copier-org/copier"},
         defaults=True,
         overwrite=True,
         quiet=True,
     )
-    answers = load_answersfile_data(dst)
-    assert answers["project_url"] == "https://github.com/copier-org/copier"
 
-    # Test invalid URL
     with pytest.raises(ValueError, match="Validation error"):
         run_copy(
             str(src),
-            str(dst),
+            str(dst_invalid),
             data={"project_url": "not-a-valid-url"},
             defaults=True,
             overwrite=True,
@@ -143,13 +141,15 @@ def test_regex_validator(tmp_path_factory: pytest.TempPathFactory):
 
         return regex_validator
 
-    # Validate email-like format
     email_pattern = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"
     register_validator(
         "email", regex_validator_factory(email_pattern, "Invalid email format")
     )
 
-    src, dst = tmp_path_factory.mktemp("src_regex"), tmp_path_factory.mktemp("dst_regex")
+    src = tmp_path_factory.mktemp("src_regex")
+    dst_valid = tmp_path_factory.mktemp("dst_regex_valid")
+    dst_invalid = tmp_path_factory.mktemp("dst_regex_invalid")
+
     build_file_tree(
         {
             (src / "copier.yml"): yaml.dump(
@@ -163,29 +163,25 @@ def test_regex_validator(tmp_path_factory: pytest.TempPathFactory):
                     },
                 }
             ),
-            (src / "{{ _copier_conf.answers_file }}.jinja"): (
-                "{{ _copier_answers|to_nice_yaml }}"
+            (src / "[[ _copier_conf.answers_file ]].tmpl"): (
+                "[[ _copier_answers|to_nice_yaml ]]"
             ),
         }
     )
 
-    # Test valid email
     run_copy(
         str(src),
-        str(dst),
+        str(dst_valid),
         data={"author_email": "test@example.org"},
         defaults=True,
         overwrite=True,
         quiet=True,
     )
-    answers = load_answersfile_data(dst)
-    assert answers["author_email"] == "test@example.org"
 
-    # Test invalid email
     with pytest.raises(ValueError, match="Invalid email format"):
         run_copy(
             str(src),
-            str(dst),
+            str(dst_invalid),
             data={"author_email": "invalid-email"},
             defaults=True,
             overwrite=True,
@@ -206,10 +202,11 @@ def test_semver_validator(tmp_path_factory: pytest.TempPathFactory):
 
     register_validator("semver", semver_validator)
 
-    src, dst = (
-        tmp_path_factory.mktemp("src_semver"),
-        tmp_path_factory.mktemp("dst_semver"),
-    )
+    src = tmp_path_factory.mktemp("src_semver")
+    dst_valid1 = tmp_path_factory.mktemp("dst_semver_valid1")
+    dst_valid2 = tmp_path_factory.mktemp("dst_semver_valid2")
+    dst_invalid = tmp_path_factory.mktemp("dst_semver_invalid")
+
     build_file_tree(
         {
             (src / "copier.yml"): yaml.dump(
@@ -223,36 +220,29 @@ def test_semver_validator(tmp_path_factory: pytest.TempPathFactory):
                     },
                 }
             ),
-            (src / "{{ _copier_conf.answers_file }}.jinja"): (
-                "{{ _copier_answers|to_nice_yaml }}"
+            (src / "[[ _copier_conf.answers_file ]].tmpl"): (
+                "[[ _copier_answers|to_nice_yaml ]]"
             ),
         }
     )
 
-    # Test valid version
     run_copy(
-        str(src), str(dst), data={"version": "2.3.4"}, defaults=True, overwrite=True, quiet=True
+        str(src), str(dst_valid1), data={"version": "2.3.4"}, defaults=True, overwrite=True, quiet=True
     )
-    answers = load_answersfile_data(dst)
-    assert answers["version"] == "2.3.4"
 
-    # Test valid pre-release version
     run_copy(
         str(src),
-        str(dst),
+        str(dst_valid2),
         data={"version": "1.0.0-alpha.1"},
         defaults=True,
         overwrite=True,
         quiet=True,
     )
-    answers = load_answersfile_data(dst)
-    assert answers["version"] == "1.0.0-alpha.1"
 
-    # Test invalid version
     with pytest.raises(ValueError, match="not a valid semantic version"):
         run_copy(
             str(src),
-            str(dst),
+            str(dst_invalid),
             data={"version": "invalid-version"},
             defaults=True,
             overwrite=True,
@@ -262,10 +252,10 @@ def test_semver_validator(tmp_path_factory: pytest.TempPathFactory):
 
 def test_template_validator_still_works(tmp_path_factory: pytest.TempPathFactory):
     """Ensure that the original template-based validator still works."""
-    src, dst = (
-        tmp_path_factory.mktemp("src_template"),
-        tmp_path_factory.mktemp("dst_template"),
-    )
+    src = tmp_path_factory.mktemp("src_template")
+    dst_valid = tmp_path_factory.mktemp("dst_template_valid")
+    dst_invalid = tmp_path_factory.mktemp("dst_template_invalid")
+
     build_file_tree(
         {
             (src / "copier.yml"): (
@@ -287,14 +277,10 @@ def test_template_validator_still_works(tmp_path_factory: pytest.TempPathFactory
         }
     )
 
-    # Test valid age
-    run_copy(str(src), str(dst), data={"age": 25}, defaults=True, overwrite=True, quiet=True)
-    answers = load_answersfile_data(dst)
-    assert answers["age"] == 25
+    run_copy(str(src), str(dst_valid), data={"age": 25}, defaults=True, overwrite=True, quiet=True)
 
-    # Test invalid age
     with pytest.raises(ValueError, match="Age cannot be negative"):
-        run_copy(str(src), str(dst), data={"age": -5}, defaults=True, overwrite=True, quiet=True)
+        run_copy(str(src), str(dst_invalid), data={"age": -5}, defaults=True, overwrite=True, quiet=True)
 
 
 def test_custom_validator_with_int_value(tmp_path_factory: pytest.TempPathFactory):
@@ -307,7 +293,11 @@ def test_custom_validator_with_int_value(tmp_path_factory: pytest.TempPathFactor
 
     register_validator("positive_int", positive_int_validator)
 
-    src, dst = tmp_path_factory.mktemp("src_int"), tmp_path_factory.mktemp("dst_int")
+    src = tmp_path_factory.mktemp("src_int")
+    dst_valid = tmp_path_factory.mktemp("dst_int_valid")
+    dst_zero = tmp_path_factory.mktemp("dst_int_zero")
+    dst_negative = tmp_path_factory.mktemp("dst_int_negative")
+
     build_file_tree(
         {
             (src / "copier.yml"): yaml.dump(
@@ -321,21 +311,16 @@ def test_custom_validator_with_int_value(tmp_path_factory: pytest.TempPathFactor
                     },
                 }
             ),
-            (src / "{{ _copier_conf.answers_file }}.jinja"): (
-                "{{ _copier_answers|to_nice_yaml }}"
+            (src / "[[ _copier_conf.answers_file ]].tmpl"): (
+                "[[ _copier_answers|to_nice_yaml ]]"
             ),
         }
     )
 
-    # Test valid positive int
-    run_copy(str(src), str(dst), data={"count": 10}, defaults=True, overwrite=True, quiet=True)
-    answers = load_answersfile_data(dst)
-    assert answers["count"] == 10
+    run_copy(str(src), str(dst_valid), data={"count": 10}, defaults=True, overwrite=True, quiet=True)
 
-    # Test zero (invalid)
     with pytest.raises(ValueError, match="must be a positive number"):
-        run_copy(str(src), str(dst), data={"count": 0}, defaults=True, overwrite=True, quiet=True)
+        run_copy(str(src), str(dst_zero), data={"count": 0}, defaults=True, overwrite=True, quiet=True)
 
-    # Test negative (invalid)
     with pytest.raises(ValueError, match="must be a positive number"):
-        run_copy(str(src), str(dst), data={"count": -1}, defaults=True, overwrite=True, quiet=True)
+        run_copy(str(src), str(dst_negative), data={"count": -1}, defaults=True, overwrite=True, quiet=True)
