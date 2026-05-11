@@ -226,6 +226,12 @@ class Worker:
 
         skip_tasks:
             When `True`, skip template tasks execution.
+
+        profile:
+            Profile name to use from multi-profile answers file.
+
+            When specified, answers will be loaded from and saved to this profile
+            in the answers file. If not specified, the default profile will be used.
     """
 
     # NOTE: attributes are fully documented in [creating.md](../docs/creating.md)
@@ -251,6 +257,7 @@ class Worker:
     unsafe: bool = False
     skip_answered: bool = False
     skip_tasks: bool = False
+    profile: str | None = None
 
     answers: AnswersMap = field(default_factory=AnswersMap, init=False)
     _cleanup_hooks: list[Callable[[], None]] = field(default_factory=list, init=False)
@@ -357,15 +364,19 @@ class Worker:
             print(self._render_string(message), file=sys.stderr)
 
     def _answers_to_remember(self) -> Mapping[str, Any]:
-        """Get only answers that will be remembered in the copier answers file."""
-        # All internal values must appear first
+        """Get only answers that will be remembered in the copier answers file.
+
+        Supports multi-profile answers files. If a profile is specified, the answers
+        will be organized under that profile.
+        """
+        from ._user_data import save_answersfile_data
+
         answers: AnyByStrDict = {}
         commit = self.template.commit
         src = self.template.url
         for key, value in (("_commit", commit), ("_src_path", src)):
             if value is not None:
                 answers[key] = value
-        # Other data goes next
         answers.update(
             (str(k), v)
             for (k, v) in self.answers.combined.items()
@@ -376,7 +387,36 @@ class Worker:
             and isinstance(k, JSONSerializable)
             and isinstance(v, JSONSerializable)
         )
-        return answers
+
+        if self.profile is None:
+            existing_data: AnyByStrDict = {}
+            try:
+                existing_file = Path(
+                    self.subproject.local_abspath, self.answers_relpath
+                )
+                with existing_file.open("rb") as fd:
+                    existing = yaml.safe_load(fd)
+                    if existing and isinstance(existing, dict):
+                        existing_data = existing
+            except (FileNotFoundError, IsADirectoryError):
+                pass
+
+            if "_profiles" in existing_data:
+                default_profile = existing_data.get("_default")
+                if default_profile:
+                    existing_data["_profiles"][default_profile] = answers
+                else:
+                    existing_data["_default"] = "default"
+                    existing_data["_profiles"] = {"default": answers}
+                return existing_data
+            return answers
+
+        return save_answersfile_data(
+            self.subproject.local_abspath,
+            self.answers_relpath,
+            answers,
+            profile=self.profile,
+        )
 
     def _execute_tasks(self, tasks: Sequence[Task]) -> None:
         """Run the given tasks.
@@ -449,6 +489,7 @@ class Worker:
                 "unsafe": lambda: self.unsafe,
                 "skip_answered": lambda: self.skip_answered,
                 "skip_tasks": lambda: self.skip_tasks,
+                "profile": lambda: self.profile,
                 "sep": lambda: os.sep,
                 "os": lambda: OS,
             }
@@ -1190,6 +1231,7 @@ class Worker:
         result = Subproject(
             local_abspath=self.dst_path.absolute(),
             answers_relpath=self.answers_file or Path(".copier-answers.yml"),
+            profile=self.profile,
         )
         self._cleanup_hooks.append(result._cleanup)
         return result
@@ -1681,6 +1723,7 @@ def run_copy(
     quiet: bool = False,
     unsafe: bool = False,
     skip_tasks: bool = False,
+    profile: str | None = None,
 ) -> Worker:
     """Copy a template to a destination, from zero."""
     with Worker(
@@ -1709,6 +1752,7 @@ def run_copy(
         quiet=quiet,
         unsafe=unsafe,
         skip_tasks=skip_tasks,
+        profile=profile,
     ) as worker:
         worker.run_copy()
     return worker
@@ -1733,6 +1777,7 @@ def run_recopy(
     unsafe: bool = False,
     skip_answered: bool = False,
     skip_tasks: bool = False,
+    profile: str | None = None,
 ) -> Worker:
     """Update a subproject from its template, discarding subproject evolution."""
     with Worker(
@@ -1761,6 +1806,7 @@ def run_recopy(
         unsafe=unsafe,
         skip_answered=skip_answered,
         skip_tasks=skip_tasks,
+        profile=profile,
     ) as worker:
         worker.run_recopy()
     return worker
@@ -1787,6 +1833,7 @@ def run_update(
     unsafe: bool = False,
     skip_answered: bool = False,
     skip_tasks: bool = False,
+    profile: str | None = None,
 ) -> Worker:
     """Update a subproject, from its template."""
     with Worker(
@@ -1817,6 +1864,7 @@ def run_update(
         unsafe=unsafe,
         skip_answered=skip_answered,
         skip_tasks=skip_tasks,
+        profile=profile,
     ) as worker:
         worker.run_update()
     return worker
@@ -1826,6 +1874,7 @@ def get_update_data(
     dst_path: Path | str = ".",
     answers_file: Path | str | None = None,
     use_prereleases: bool = False,
+    profile: str | None = None,
 ) -> tuple[bool, str, str]:
     """Gets data regarding if a subproject has updates.
 
@@ -1843,6 +1892,7 @@ def get_update_data(
             else answers_file
         ),
         use_prereleases=use_prereleases,
+        profile=profile,
     ) as worker:
         if worker.subproject.template is None or worker.subproject.template.ref is None:
             raise UserMessageError(

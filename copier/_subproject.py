@@ -29,10 +29,14 @@ class Subproject:
 
         answers_relpath:
             Relative path to [the answers file][the-copier-answersyml-file].
+
+        profile:
+            Profile name to use from multi-profile answers file.
     """
 
     local_abspath: AbsolutePath
     answers_relpath: Path = Path(".copier-answers.yml")
+    profile: str | None = None
 
     _cleanup_hooks: list[Callable[[], None]] = field(default_factory=list, init=False)
 
@@ -57,7 +61,9 @@ class Subproject:
     def _raw_answers(self) -> AnyByStrDict:
         """Get last answers, loaded raw as yaml."""
         try:
-            return load_answersfile_data(self.local_abspath, self.answers_relpath)
+            return load_answersfile_data(
+                self.local_abspath, self.answers_relpath, profile=self.profile
+            )
         except OSError:
             return {}
 

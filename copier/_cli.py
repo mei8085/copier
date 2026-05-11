@@ -173,6 +173,14 @@ class _Subcommand(cli.Application):  # type: ignore[misc]
         default=False,
         help="Skip template tasks execution",
     )
+    profile = cli.SwitchAttr(
+        ["-p", "--profile"],
+        default=None,
+        help=(
+            "Profile name to use from multi-profile answers file. "
+            "If not specified, the default profile will be used."
+        ),
+    )
 
     @cli.switch(  # type: ignore[untyped-decorator]
         ["-d", "--data"],
@@ -270,6 +278,7 @@ class CopierCopySubApp(_Subcommand):
                 quiet=self.quiet,
                 unsafe=self.unsafe,
                 skip_tasks=self.skip_tasks,
+                profile=self.profile,
             )
 
         return _handle_exceptions(inner)
@@ -347,6 +356,7 @@ class CopierRecopySubApp(_Subcommand):
                 unsafe=self.unsafe,
                 skip_answered=self.skip_answered,
                 skip_tasks=self.skip_tasks,
+                profile=self.profile,
             )
 
         return _handle_exceptions(inner)
@@ -432,6 +442,7 @@ class CopierUpdateSubApp(_Subcommand):
                 unsafe=self.unsafe,
                 skip_answered=self.skip_answered,
                 skip_tasks=self.skip_tasks,
+                profile=self.profile,
             )
 
         return _handle_exceptions(inner)
@@ -478,6 +489,14 @@ class CopierCheckUpdateSubApp(cli.Application):  # type: ignore[misc]
         ["-g", "--prereleases"],
         help="Use prereleases to compare template VCS tags.",
     )
+    profile = cli.SwitchAttr(
+        ["-p", "--profile"],
+        default=None,
+        help=(
+            "Profile name to use from multi-profile answers file. "
+            "If not specified, the default profile will be used."
+        ),
+    )
     output_format = cli.SwitchAttr(
         ["--output-format"],
         cli.Set("plain", "json"),
@@ -502,6 +521,7 @@ class CopierCheckUpdateSubApp(cli.Application):  # type: ignore[misc]
                 dst_path=destination_path,
                 answers_file=self.answers_file,
                 use_prereleases=self.prereleases,
+                profile=self.profile,
             )
 
             update_json = json.dumps(

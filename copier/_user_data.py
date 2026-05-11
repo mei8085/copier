@@ -586,11 +586,33 @@ def load_answersfile_data(
     answers_file: StrOrPath = ".copier-answers.yml",
     *,
     warn_on_missing: bool = False,
+    profile: str | None = None,
 ) -> AnyByStrDict:
-    """Load answers data from a `$dst_path/$answers_file` file if it exists."""
+    """Load answers data from a `$dst_path/$answers_file` file if it exists.
+
+    Supports multi-profile answers files. If the answers file uses the new format
+    (with `_profiles` key), you can specify which profile to load. If no profile
+    is specified, the `_default` profile will be used.
+
+    Args:
+        dst_path: Destination path where the answers file is located.
+        answers_file: Relative path to the answers file.
+        warn_on_missing: Whether to warn if the file is missing.
+        profile: Profile name to load from multi-profile answers file.
+    """
     try:
         with Path(dst_path, answers_file).open("rb") as fd:
-            return yaml.safe_load(fd)
+            data = yaml.safe_load(fd)
+            if data is None:
+                return {}
+            if isinstance(data, dict) and "_profiles" in data:
+                profiles = data.get("_profiles", {})
+                default_profile = data.get("_default")
+                selected_profile = profile or default_profile
+                if selected_profile and selected_profile in profiles:
+                    return profiles[selected_profile] or {}
+                return {}
+            return data
     except (FileNotFoundError, IsADirectoryError):
         if warn_on_missing:
             warnings.warn(
@@ -598,6 +620,65 @@ def load_answersfile_data(
                 MissingFileWarning,
             )
         return {}
+
+
+def save_answersfile_data(
+    dst_path: StrOrPath,
+    answers_file: StrOrPath = ".copier-answers.yml",
+    answers: AnyByStrDict | None = None,
+    *,
+    profile: str | None = None,
+) -> AnyByStrDict:
+    """Save answers data to a `$dst_path/$answers_file` file.
+
+    Supports multi-profile answers files. If profile is specified, the answers
+    will be saved under that profile.
+
+    Args:
+        dst_path: Destination path where the answers file will be saved.
+        answers_file: Relative path to the answers file.
+        answers: Answers to save. If None, the existing file won't be modified.
+        profile: Profile name to save to. If None, uses flat format (backwards compatible).
+
+    Returns:
+        The full data that was saved to the file.
+    """
+    answers = answers or {}
+    file_path = Path(dst_path, answers_file)
+
+    existing_data: AnyByStrDict = {}
+    try:
+        with file_path.open("rb") as fd:
+            existing = yaml.safe_load(fd)
+            if existing and isinstance(existing, dict):
+                existing_data = existing
+    except (FileNotFoundError, IsADirectoryError):
+        pass
+
+    if profile is None:
+        if "_profiles" in existing_data:
+            default_profile = existing_data.get("_default")
+            if default_profile:
+                existing_data["_profiles"][default_profile] = answers
+            else:
+                existing_data["_default"] = "default"
+                existing_data["_profiles"] = {"default": answers}
+        else:
+            existing_data = answers
+    else:
+        if "_profiles" not in existing_data:
+            if existing_data:
+                existing_data = {
+                    "_default": "default",
+                    "_profiles": {"default": existing_data},
+                }
+            else:
+                existing_data = {"_profiles": {}}
+        if "_default" not in existing_data or not existing_data["_default"]:
+            existing_data["_default"] = profile
+        existing_data["_profiles"][profile] = answers
+
+    return existing_data
 
 
 CAST_STR_TO_NATIVE: Mapping[str, Callable[[str], Any]] = {
