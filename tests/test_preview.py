@@ -300,7 +300,7 @@ def test_normal_copy_still_works(
                     default: myproject
                 """
             ),
-            (src / "{{ name }}.txt"): "Hello {{ name }}!",
+            (src / "{{ name }}.txt.jinja"): "Hello {{ name }}!",
         }
     )
 
