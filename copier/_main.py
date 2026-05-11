@@ -388,29 +388,6 @@ class Worker:
             and isinstance(v, JSONSerializable)
         )
 
-        if self.profile is None:
-            existing_data: AnyByStrDict = {}
-            try:
-                existing_file = Path(
-                    self.subproject.local_abspath, self.answers_relpath
-                )
-                with existing_file.open("rb") as fd:
-                    existing = yaml.safe_load(fd)
-                    if existing and isinstance(existing, dict):
-                        existing_data = existing
-            except (FileNotFoundError, IsADirectoryError):
-                pass
-
-            if "_profiles" in existing_data:
-                default_profile = existing_data.get("_default")
-                if default_profile:
-                    existing_data["_profiles"][default_profile] = answers
-                else:
-                    existing_data["_default"] = "default"
-                    existing_data["_profiles"] = {"default": answers}
-                return existing_data
-            return answers
-
         return save_answersfile_data(
             self.subproject.local_abspath,
             self.answers_relpath,

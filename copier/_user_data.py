@@ -628,6 +628,7 @@ def save_answersfile_data(
     answers: AnyByStrDict | None = None,
     *,
     profile: str | None = None,
+    write: bool = False,
 ) -> AnyByStrDict:
     """Save answers data to a `$dst_path/$answers_file` file.
 
@@ -639,9 +640,10 @@ def save_answersfile_data(
         answers_file: Relative path to the answers file.
         answers: Answers to save. If None, the existing file won't be modified.
         profile: Profile name to save to. If None, uses flat format (backwards compatible).
+        write: Whether to actually write to file or just return the merged data.
 
     Returns:
-        The full data that was saved to the file.
+        The full data that was (or would be) saved to the file.
     """
     answers = answers or {}
     file_path = Path(dst_path, answers_file)
@@ -677,6 +679,10 @@ def save_answersfile_data(
         if "_default" not in existing_data or not existing_data["_default"]:
             existing_data["_default"] = profile
         existing_data["_profiles"][profile] = answers
+
+    if write:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(yaml.safe_dump(existing_data, default_flow_style=False, sort_keys=False))
 
     return existing_data
 
