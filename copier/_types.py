@@ -131,3 +131,46 @@ class VcsRef(Enum):
     """A special value to indicate that the current ref of the existing
     template should be used.
     """
+
+
+ValidatorFn = Callable[[Any, str], str]
+"""Validator function type: takes (value, question_name) and returns error message or empty string."""
+
+
+_question_validators: dict[str, ValidatorFn] = {}
+
+
+def register_validator(name: str, validator: ValidatorFn) -> None:
+    """Register a custom question validator.
+    
+    Args:
+        name: Name of the validator, used to reference it in question configs.
+        validator: The validator function.
+    """
+    _question_validators[name] = validator
+
+
+def get_validator(name: str) -> ValidatorFn | None:
+    """Get a registered validator by name.
+    
+    Args:
+        name: Name of the validator.
+        
+    Returns:
+        The validator function, or None if not registered.
+    """
+    return _question_validators.get(name)
+
+
+def get_all_validators() -> dict[str, ValidatorFn]:
+    """Get all registered validators.
+    
+    Returns:
+        A copy of the validators dictionary.
+    """
+    return dict(_question_validators)
+
+
+def clear_validators() -> None:
+    """Clear all registered validators. Useful for testing."""
+    _question_validators.clear()

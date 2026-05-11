@@ -36,6 +36,7 @@ from ._types import (
     LazyDict,
     MissingType,
     StrOrPath,
+    get_validator,
 )
 from .errors import InvalidTypeError, MissingFileWarning, UserMessageError
 
@@ -458,7 +459,22 @@ class Question:
         return cast_to_bool(self.render_value(self.multiline))
 
     def validate_answer(self, answer: Any) -> None:
-        """Validate user answer."""
+        """Validate user answer.
+        
+        Supports:
+        1. Custom validators registered via `register_validator` - referenced by name
+        2. Jinja templates for inline validation logic
+        """
+        validator = self.validator
+        if validator:
+            registered_validator = get_validator(validator)
+            if registered_validator is not None:
+                err_msg = registered_validator(answer, self.var_name).strip()
+                if err_msg:
+                    raise ValueError(
+                        f"Validation error for question '{self.var_name}': {err_msg}"
+                    )
+                return
         try:
             err_msg = self.render_value(self.validator, {self.var_name: answer}).strip()
         except Exception as error:
