@@ -42,6 +42,7 @@ from pydantic.dataclasses import dataclass
 from pydantic_core import to_jsonable_python
 from questionary import confirm, unsafe_prompt
 
+from ._adapters import FileRenderResult, IOAdapters
 from ._jinja_ext import YieldExtension, get_yield_context
 from ._settings import Settings, SettingsModel, is_trusted_repository
 from ._subproject import Subproject
@@ -68,7 +69,6 @@ from ._types import (
     VcsRef,
 )
 from ._user_data import AnswersMap, Question, load_answersfile_data
-from ._vcs import get_git, is_git_available
 from .errors import (
     ConfigFileError,
     CopierAnswersInterrupt,
@@ -255,6 +255,10 @@ class Worker:
     answers: AnswersMap = field(default_factory=AnswersMap, init=False)
     _cleanup_hooks: list[Callable[[], None]] = field(default_factory=list, init=False)
 
+    def __post_init__(self) -> None:
+        """Initialize IO adapters after dataclass initialization."""
+        self._io_adapters: IOAdapters = IOAdapters.real()
+
     def __enter__(self) -> Worker:
         """Allow using worker as a context manager."""
         return self
@@ -412,17 +416,24 @@ class Worker:
                 continue
 
             working_directory = (
-                # We can't use _render_path here, as that function has special handling
-                # for files in the template
                 self.subproject.local_abspath
                 / Path(self._render_string(str(task.working_directory), extra_context))
             ).absolute()
 
             extra_env = {k[1:].upper(): str(v) for k, v in extra_context.items()}
-            with local.cwd(working_directory), local.env(**extra_env):
-                process = subprocess.run(task_cmd, shell=use_shell, env=local.env)
-                if process.returncode:
-                    raise TaskError.from_process(process)
+            
+            returncode = self._io_adapters.tasks.execute(
+                cmd=task_cmd,
+                working_directory=working_directory,
+                env=extra_env,
+                use_shell=use_shell,
+            )
+            if returncode:
+                class FakeProcess:
+                    def __init__(self, returncode: int):
+                        self.returncode = returncode
+                
+                raise TaskError.from_process(FakeProcess(returncode))
 
     def _render_context(self) -> AnyByStrMutableMapping:
         """Produce render context for Jinja."""
@@ -536,13 +547,13 @@ class Worker:
         assert not dst_relpath.is_absolute()
         assert not expected_contents or not is_dir, "Dirs cannot have expected content"
         dst_abspath = Path(self.subproject.local_abspath, dst_relpath)
-        previous_is_symlink = dst_abspath.is_symlink()
+        previous_is_symlink = self._io_adapters.fs.is_symlink(dst_abspath)
         try:
             previous_content: bytes | Path
             if previous_is_symlink:
-                previous_content = dst_abspath.readlink()
+                previous_content = self._io_adapters.fs.readlink(dst_abspath)
             else:
-                previous_content = dst_abspath.read_bytes()
+                previous_content = self._io_adapters.fs.read_bytes(dst_abspath)
         except FileNotFoundError:
             printf(
                 "create",
@@ -561,7 +572,7 @@ class Worker:
         mode_matches = True
         if expected_mode is not None and not previous_is_symlink and not is_dir:
             try:
-                dst_exec_bits = dst_abspath.stat().st_mode & 0o111
+                dst_exec_bits = self._io_adapters.fs.stat(dst_abspath).st_mode & 0o111
             except (FileNotFoundError, PermissionError):
                 dst_exec_bits = None
             else:
@@ -770,12 +781,8 @@ class Worker:
         dst_root = self.dst_path.resolve()
         for src in scantree(str(self.template_copy_root), follow_symlinks):
             src_abspath = Path(src.path)
-            # If the source is a symlink, we are not preserving symlinks, and the
-            # symlink target is outside the template root, this means that we are
-            # copying a file/directory from outside the template, which is
-            # forbidden, so raise an error.
             if (
-                src_abspath.is_symlink()
+                self._io_adapters.fs.is_symlink(src_abspath)
                 and not self.template.preserve_symlinks
                 and not (src_abspath.resolve()).is_relative_to(
                     self.template.local_abspath
@@ -790,12 +797,7 @@ class Worker:
             )
             for dst_relpath, ctx in dst_relpaths_ctxs:
                 dst_abspath = dst_root / dst_relpath
-                if dst_abspath.is_symlink() and self.template.preserve_symlinks:
-                    # If destination path is a symlink, it can safely point outside the
-                    # subproject dir, while still itself existing within the subproject.
-                    # (So long as nothing is templated into it (if it is a directory),
-                    # which would be caught by that path's own check.)
-                    # Therefore avoid resolving the symlink itself:
+                if self._io_adapters.fs.is_symlink(dst_abspath) and self.template.preserve_symlinks:
                     dst_realpath = dst_abspath.parent.resolve() / dst_abspath.name
                 else:
                     dst_realpath = dst_abspath.resolve()
@@ -809,6 +811,101 @@ class Worker:
                     self._render_folder(dst_relpath)
                 else:
                     self._render_file(src_relpath, dst_relpath, extra_context=ctx or {})
+
+    def _compute_file_render(
+        self,
+        src_relpath: Path,
+        dst_relpath: Path,
+        extra_context: AnyByStrDict | None = None,
+    ) -> FileRenderResult:
+        """Compute the render result for a file (pure computation).
+
+        Args:
+            src_relpath:
+                File to be rendered. It must be a path relative to the template
+                root.
+            dst_relpath:
+                File to be created. It must be a path relative to the subproject
+                root.
+            extra_context:
+                Additional variables to use for rendering the template.
+
+        Returns:
+            A FileRenderResult containing the computed render result.
+        """
+        assert not src_relpath.is_absolute()
+        assert not dst_relpath.is_absolute()
+        src_abspath = self.template.local_abspath / src_relpath
+        
+        if src_relpath.name.endswith(self.template.templates_suffix):
+            try:
+                tpl = self.jinja_env.get_template(src_relpath.as_posix())
+            except UnicodeDecodeError:
+                if self.template.templates_suffix:
+                    raise
+                new_content = self._io_adapters.fs.read_bytes(src_abspath)
+            else:
+                new_content = tpl.render(
+                    **self._render_context(), **(extra_context or {})
+                ).encode()
+                if get_yield_context(self.jinja_env).yield_name:
+                    raise YieldTagInFileError(
+                        f"File {src_relpath} contains a yield tag, but it is not allowed."
+                    )
+        else:
+            new_content = self._io_adapters.fs.read_bytes(src_abspath)
+        
+        stat_mode = self._io_adapters.fs.stat(src_abspath).st_mode
+        git_mode = self.template.git_index_modes.get(
+            PurePosixPath(src_relpath.as_posix())
+        )
+        if git_mode is None:
+            src_mode = stat_mode
+        else:
+            src_mode = (stat_mode & ~0o111) | (git_mode & 0o111)
+        
+        return FileRenderResult(
+            dst_relpath=dst_relpath,
+            new_content=new_content,
+            src_mode=src_mode,
+            is_symlink=False,
+            is_dir=False,
+        )
+
+    def _apply_file_render(self, render_result: FileRenderResult) -> None:
+        """Apply a file render result using IO adapters.
+
+        Args:
+            render_result: The FileRenderResult to apply.
+        """
+        dst_abspath = self.subproject.local_abspath / render_result.dst_relpath
+        
+        if not self._render_allowed(
+            render_result.dst_relpath,
+            expected_contents=render_result.new_content,
+            expected_mode=render_result.src_mode,
+        ):
+            return
+        
+        if self.pretend:
+            return
+        
+        self._io_adapters.fs.mkdir(dst_abspath.parent, parents=True, exist_ok=True)
+        
+        if self._io_adapters.fs.is_symlink(dst_abspath):
+            self._io_adapters.fs.unlink(dst_abspath)
+        
+        self._io_adapters.fs.write_bytes(dst_abspath, render_result.new_content)
+        
+        if (dst_mode := self._io_adapters.fs.stat(dst_abspath).st_mode) != render_result.src_mode:
+            self._io_adapters.fs.chmod(dst_abspath, render_result.src_mode)
+        
+        if self._io_adapters.git.is_available():
+            self._io_adapters.git.sync_executable_bit(
+                self.subproject.local_abspath,
+                render_result.dst_relpath,
+                render_result.src_mode,
+            )
 
     def _render_file(  # noqa: C901
         self,
@@ -828,161 +925,75 @@ class Worker:
             extra_context:
                 Additional variables to use for rendering the template.
         """
-        # TODO Get from main.render_file()
+        render_result = self._compute_file_render(
+            src_relpath, dst_relpath, extra_context
+        )
+        self._apply_file_render(render_result)
+
+    def _compute_symlink_render(
+        self,
+        src_relpath: Path,
+        dst_relpath: Path,
+    ) -> FileRenderResult | None:
+        """Compute the render result for a symlink (pure computation).
+
+        Args:
+            src_relpath:
+                Symlink to be rendered. It must be a path relative to the
+                template root.
+            dst_relpath:
+                Symlink to be created. It must be a path relative to the
+                subproject root.
+
+        Returns:
+            A FileRenderResult or None if the symlink should be skipped.
+        """
         assert not src_relpath.is_absolute()
         assert not dst_relpath.is_absolute()
+        if dst_relpath is None or self.match_exclude(dst_relpath):
+            return None
+
         src_abspath = self.template.local_abspath / src_relpath
-        if src_relpath.name.endswith(self.template.templates_suffix):
-            try:
-                tpl = self.jinja_env.get_template(src_relpath.as_posix())
-            except UnicodeDecodeError:
-                if self.template.templates_suffix:
-                    # suffix is not empty, re-raise
-                    raise
-                # suffix is empty, fallback to copy
-                new_content = src_abspath.read_bytes()
-            else:
-                new_content = tpl.render(
-                    **self._render_context(), **(extra_context or {})
-                ).encode()
-                if get_yield_context(self.jinja_env).yield_name:
-                    raise YieldTagInFileError(
-                        f"File {src_relpath} contains a yield tag, but it is not allowed."
-                    )
+        src_target = self._io_adapters.fs.readlink(src_abspath)
+        if src_abspath.name.endswith(self.template.templates_suffix):
+            dst_target = Path(self._render_string(str(src_target)))
         else:
-            new_content = src_abspath.read_bytes()
-        dst_abspath = self.subproject.local_abspath / dst_relpath
-        # Prefer the template's git-index mode over ``stat().st_mode`` so
-        # that executable bits committed by the template author are
-        # honored even on filesystems that don't represent them on disk
-        # (notably Windows). ``stat().st_mode`` is used for
-        # non-executable-bit flags (user/group/world read/write, etc.)
-        # and as a fallback when the file isn't tracked in the
-        # template's git index — e.g. local directory templates without
-        # a git repo, or untracked files.
-        stat_mode = src_abspath.stat().st_mode
-        git_mode = self.template.git_index_modes.get(
-            PurePosixPath(src_relpath.as_posix())
+            dst_target = src_target
+        
+        src_mode = self._io_adapters.fs.lstat(src_abspath).st_mode
+
+        return FileRenderResult(
+            dst_relpath=dst_relpath,
+            new_content=b"",
+            src_mode=src_mode,
+            is_symlink=True,
+            symlink_target=dst_target,
+            is_dir=False,
         )
-        if git_mode is None:
-            src_mode = stat_mode
-        else:
-            # Merge the git-tracked executable bits with the filesystem's
-            # non-exec bits so we don't lose read/write flags that matter
-            # for the destination chmod.
-            src_mode = (stat_mode & ~0o111) | (git_mode & 0o111)
+
+    def _apply_symlink_render(self, render_result: FileRenderResult) -> None:
+        """Apply a symlink render result using IO adapters.
+
+        Args:
+            render_result: The FileRenderResult to apply.
+        """
         if not self._render_allowed(
-            dst_relpath,
-            expected_contents=new_content,
-            expected_mode=src_mode,
+            render_result.dst_relpath,
+            expected_contents=render_result.symlink_target or Path(),
+            is_symlink=True,
         ):
             return
-        if not self.pretend:
-            dst_abspath.parent.mkdir(parents=True, exist_ok=True)
-            if dst_abspath.is_symlink():
-                # Writing to a symlink just writes to its target, so if we want to
-                # replace a symlink with a file we have to unlink it first
-                dst_abspath.unlink()
-            dst_abspath.write_bytes(new_content)
-            if (dst_mode := dst_abspath.stat().st_mode) != src_mode:
-                try:
-                    dst_abspath.chmod(src_mode)
-                except PermissionError:
-                    # In some filesystems (e.g., gcsfuse), `chmod` is not allowed,
-                    # so we suppress the `PermissionError` here.
-                    warnings.warn(
-                        f"Path permissions for {dst_abspath} cannot be changed from "
-                        f"{stat.filemode(dst_mode)} to {stat.filemode(src_mode)}",
-                        stacklevel=2,
-                    )
-            if is_git_available():
-                self._sync_git_index_executable_bit(dst_relpath, src_mode)
 
-    def _sync_git_index_executable_bit(self, dst_relpath: Path, src_mode: int) -> None:
-        """Propagate executable-bit changes to the destination's git index.
-
-        Only needed when ``core.fileMode`` is ``false`` (the Windows default
-        and a common opt-out elsewhere): in that case git ignores on-disk
-        mode bits, so the ``chmod`` performed by :meth:`_render_file` is
-        invisible to git, and the executable bit would be silently lost on
-        the user's next commit. To keep the destination's index in sync
-        with the template, we explicitly rewrite the entry's mode via
-        ``git update-index --cacheinfo``.
-
-        When ``core.fileMode`` is ``true`` (or unset, the unix default),
-        this method is a no-op: git already picks up the on-disk ``chmod``
-        as an *unstaged* modification, which matches copier's normal
-        behavior of leaving rendered changes unstaged for user review.
-
-        Also a no-op when the destination is not in a git repository, when
-        the file is not yet tracked (the user's eventual ``git add`` will
-        record the on-disk mode where the platform allows it), or when git
-        is unavailable. All git failures are swallowed so that copying or
-        updating cannot be broken by an unrelated git problem.
-
-        .. note::
-
-            ``git update-index --chmod=±x`` cannot be used here even
-            though it looks simpler: it has a side effect of also
-            re-staging the current working-tree content as the blob (it
-            implicitly refreshes the index entry). During ``copier
-            update`` the working tree has already been overwritten with
-            the new template content at the time this method runs, so
-            ``--chmod`` would stomp the downstream-edited blob that the
-            update flow needs to reconstruct merge conflicts.
-            ``--cacheinfo`` rewrites the mode on the *existing* blob
-            SHA only, leaving the rest of the entry (and therefore the
-            conflict-reconstruction flow) untouched.
-        """
-        subproject_root = self.subproject.local_abspath
-        git = get_git(context_dir=subproject_root)
-        try:
-            # ``--type=bool`` normalizes truthy/falsy spellings to
-            # ``true``/``false``.  Exits 1 if the key is unset.
-            file_mode_setting = git(
-                "config", "--type=bool", "--get", "core.fileMode"
-            ).strip()
-        except ProcessExecutionError:
-            # Not a git repo, or ``core.fileMode`` is unset — unix default
-            # is ``true``, so plain ``chmod`` is enough; nothing to do.
+        if self.pretend:
             return
-        if file_mode_setting != "false":
-            # git will pick up the plain on-disk ``chmod`` from
-            # :meth:`_render_file`; no index manipulation needed.
-            return
-        try:
-            # TODO: simplify with ``--format %(objectmode)`` once the
-            # minimum git version is raised to 2.38+ (--format cannot be
-            # combined with --stage; see git-ls-files(1)).
-            result = git("ls-files", "--stage", "--", str(dst_relpath)).strip()
-        except ProcessExecutionError:
-            # git can't read the index — fall back to a silent no-op.
-            return
-        if not result:
-            # File is not tracked yet; nothing to update.
-            return
-        # Format: "<mode> <sha> <stage>\t<path>"
-        meta = result.split("\t", 1)[0].split()
-        current_index_mode = int(meta[0], 8)
-        current_index_sha = meta[1]
-        desired_executable = bool(src_mode & 0o111)
-        current_executable = bool(current_index_mode & 0o111)
-        if desired_executable == current_executable:
-            return
-        new_mode = "100755" if desired_executable else "100644"
-        try:
-            # ``--cacheinfo`` rewrites the entry's mode on the *existing*
-            # blob SHA. Unlike ``--chmod``, it does NOT re-read the
-            # working tree or restage its content.
-            git(
-                "update-index",
-                "--cacheinfo",
-                f"{new_mode},{current_index_sha},{dst_relpath}",
-            )
-        except (OSError, ProcessExecutionError):
-            # git not installed, or some other unrelated git failure
-            # — silently fall back so we never break the render path.
-            pass
+
+        dst_abspath = self.subproject.local_abspath / render_result.dst_relpath
+        if self._io_adapters.fs.is_symlink(dst_abspath) or self._io_adapters.fs.exists(dst_abspath):
+            self._io_adapters.fs.unlink(dst_abspath)
+        self._io_adapters.fs.mkdir(dst_abspath.parent, parents=True, exist_ok=True)
+        self._io_adapters.fs.symlink_to(dst_abspath, render_result.symlink_target or Path())
+        if sys.platform == "darwin":
+            self._io_adapters.fs.lchmod(dst_abspath, render_result.src_mode)
 
     def _render_symlink(self, src_relpath: Path, dst_relpath: Path) -> None:
         """Render one symlink.
@@ -995,37 +1006,41 @@ class Worker:
                 Symlink to be created. It must be a path relative to the
                 subproject root.
         """
-        assert not src_relpath.is_absolute()
+        render_result = self._compute_symlink_render(src_relpath, dst_relpath)
+        if render_result is not None:
+            self._apply_symlink_render(render_result)
+
+    def _compute_folder_render(self, dst_relpath: Path) -> FileRenderResult | None:
+        """Compute the render result for a folder (pure computation).
+
+        Args:
+            dst_relpath:
+                Folder to be created. It must be a path relative to the
+                subproject root.
+
+        Returns:
+            A FileRenderResult for the folder.
+        """
         assert not dst_relpath.is_absolute()
-        if dst_relpath is None or self.match_exclude(dst_relpath):
+        return FileRenderResult(
+            dst_relpath=dst_relpath,
+            new_content=b"",
+            src_mode=0,
+            is_symlink=False,
+            is_dir=True,
+        )
+
+    def _apply_folder_render(self, render_result: FileRenderResult) -> None:
+        """Apply a folder render result using IO adapters.
+
+        Args:
+            render_result: The FileRenderResult to apply.
+        """
+        if self.pretend:
             return
-
-        src_abspath = self.template.local_abspath / src_relpath
-        src_target = src_abspath.readlink()
-        if src_abspath.name.endswith(self.template.templates_suffix):
-            dst_target = Path(self._render_string(str(src_target)))
-        else:
-            dst_target = src_target
-
-        if not self._render_allowed(
-            dst_relpath,
-            expected_contents=dst_target,
-            is_symlink=True,
-        ):
-            return
-
-        if not self.pretend:
-            dst_abspath = self.subproject.local_abspath / dst_relpath
-            # symlink_to doesn't overwrite existing files, so delete it first
-            if dst_abspath.is_symlink() or dst_abspath.exists():
-                dst_abspath.unlink()
-            dst_abspath.parent.mkdir(parents=True, exist_ok=True)
-            dst_abspath.symlink_to(dst_target)
-            if sys.platform == "darwin":
-                # Only macOS supports permissions on symlinks.
-                # Other platforms just copy the permission of the target
-                src_mode = src_abspath.lstat().st_mode
-                dst_abspath.lchmod(src_mode)
+        if self._render_allowed(render_result.dst_relpath, is_dir=True):
+            dst_abspath = self.subproject.local_abspath / render_result.dst_relpath
+            self._io_adapters.fs.mkdir(dst_abspath, parents=True, exist_ok=True)
 
     def _render_folder(self, dst_relpath: Path) -> None:
         """Create one folder (without content).
@@ -1035,10 +1050,8 @@ class Worker:
                 Folder to be created. It must be a path relative to the
                 subproject root.
         """
-        assert not dst_relpath.is_absolute()
-        if not self.pretend and self._render_allowed(dst_relpath, is_dir=True):
-            dst_abspath = self.subproject.local_abspath / dst_relpath
-            dst_abspath.mkdir(parents=True, exist_ok=True)
+        render_result = self._compute_folder_render(dst_relpath)
+        self._apply_folder_render(render_result)
 
     def _adjust_rendered_part(self, rendered_part: str) -> str:
         """Adjust the rendered part if necessary.
