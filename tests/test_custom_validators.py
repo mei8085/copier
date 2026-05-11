@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
+import textwrap
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
@@ -15,12 +18,35 @@ from copier._types import (
 )
 from copier._user_data import load_answersfile_data
 
-from .helpers import (
-    BRACKET_ENVOPS,
-    BRACKET_ENVOPS_JSON,
-    SUFFIX_TMPL,
-    build_file_tree,
-)
+
+BRACKET_ENVOPS = {
+    "autoescape": False,
+    "block_end_string": "%]",
+    "block_start_string": "[%",
+    "comment_end_string": "#]",
+    "comment_start_string": "[#",
+    "keep_trailing_newline": True,
+    "variable_end_string": "]]",
+    "variable_start_string": "[[",
+}
+BRACKET_ENVOPS_JSON = json.dumps(BRACKET_ENVOPS)
+SUFFIX_TMPL = ".tmpl"
+
+
+def build_file_tree(spec, dedent=True, encoding="utf-8"):
+    for path, contents in spec.items():
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(contents, Path):
+            path.symlink_to(contents)
+        else:
+            binary = isinstance(contents, bytes)
+            if not binary and dedent:
+                contents = textwrap.dedent(contents)
+            mode = "wb" if binary else "w"
+            enc = None if binary else encoding
+            with Path(path).open(mode, encoding=enc) as fd:
+                fd.write(contents)
 
 
 @pytest.fixture(autouse=True)
@@ -89,6 +115,7 @@ def test_url_validator(tmp_path_factory: pytest.TempPathFactory):
         data={"project_url": "https://github.com/copier-org/copier"},
         defaults=True,
         overwrite=True,
+        quiet=True,
     )
     answers = load_answersfile_data(dst)
     assert answers["project_url"] == "https://github.com/copier-org/copier"
@@ -101,6 +128,7 @@ def test_url_validator(tmp_path_factory: pytest.TempPathFactory):
             data={"project_url": "not-a-valid-url"},
             defaults=True,
             overwrite=True,
+            quiet=True,
         )
 
 
@@ -148,6 +176,7 @@ def test_regex_validator(tmp_path_factory: pytest.TempPathFactory):
         data={"author_email": "test@example.org"},
         defaults=True,
         overwrite=True,
+        quiet=True,
     )
     answers = load_answersfile_data(dst)
     assert answers["author_email"] == "test@example.org"
@@ -160,6 +189,7 @@ def test_regex_validator(tmp_path_factory: pytest.TempPathFactory):
             data={"author_email": "invalid-email"},
             defaults=True,
             overwrite=True,
+            quiet=True,
         )
 
 
@@ -201,7 +231,7 @@ def test_semver_validator(tmp_path_factory: pytest.TempPathFactory):
 
     # Test valid version
     run_copy(
-        str(src), str(dst), data={"version": "2.3.4"}, defaults=True, overwrite=True
+        str(src), str(dst), data={"version": "2.3.4"}, defaults=True, overwrite=True, quiet=True
     )
     answers = load_answersfile_data(dst)
     assert answers["version"] == "2.3.4"
@@ -213,6 +243,7 @@ def test_semver_validator(tmp_path_factory: pytest.TempPathFactory):
         data={"version": "1.0.0-alpha.1"},
         defaults=True,
         overwrite=True,
+        quiet=True,
     )
     answers = load_answersfile_data(dst)
     assert answers["version"] == "1.0.0-alpha.1"
@@ -225,6 +256,7 @@ def test_semver_validator(tmp_path_factory: pytest.TempPathFactory):
             data={"version": "invalid-version"},
             defaults=True,
             overwrite=True,
+            quiet=True,
         )
 
 
@@ -256,13 +288,13 @@ def test_template_validator_still_works(tmp_path_factory: pytest.TempPathFactory
     )
 
     # Test valid age
-    run_copy(str(src), str(dst), data={"age": 25}, defaults=True, overwrite=True)
+    run_copy(str(src), str(dst), data={"age": 25}, defaults=True, overwrite=True, quiet=True)
     answers = load_answersfile_data(dst)
     assert answers["age"] == 25
 
     # Test invalid age
     with pytest.raises(ValueError, match="Age cannot be negative"):
-        run_copy(str(src), str(dst), data={"age": -5}, defaults=True, overwrite=True)
+        run_copy(str(src), str(dst), data={"age": -5}, defaults=True, overwrite=True, quiet=True)
 
 
 def test_custom_validator_with_int_value(tmp_path_factory: pytest.TempPathFactory):
@@ -296,14 +328,14 @@ def test_custom_validator_with_int_value(tmp_path_factory: pytest.TempPathFactor
     )
 
     # Test valid positive int
-    run_copy(str(src), str(dst), data={"count": 10}, defaults=True, overwrite=True)
+    run_copy(str(src), str(dst), data={"count": 10}, defaults=True, overwrite=True, quiet=True)
     answers = load_answersfile_data(dst)
     assert answers["count"] == 10
 
     # Test zero (invalid)
     with pytest.raises(ValueError, match="must be a positive number"):
-        run_copy(str(src), str(dst), data={"count": 0}, defaults=True, overwrite=True)
+        run_copy(str(src), str(dst), data={"count": 0}, defaults=True, overwrite=True, quiet=True)
 
     # Test negative (invalid)
     with pytest.raises(ValueError, match="must be a positive number"):
-        run_copy(str(src), str(dst), data={"count": -1}, defaults=True, overwrite=True)
+        run_copy(str(src), str(dst), data={"count": -1}, defaults=True, overwrite=True, quiet=True)
