@@ -35,6 +35,14 @@ class FileRenderResult:
     symlink_target: Path | None = None
     is_dir: bool = False
 
+    @property
+    def expected_contents(self) -> bytes | Path:
+        """Get the expected contents for _render_allowed comparison."""
+        if self.is_symlink:
+            assert self.symlink_target is not None, "symlink_target must be set for symlinks"
+            return self.symlink_target
+        return self.new_content
+
 
 class FileSystemAdapter(ABC):
     """Abstract base class for file system operations."""

@@ -429,11 +429,12 @@ class Worker:
                 use_shell=use_shell,
             )
             if returncode:
-                class FakeProcess:
-                    def __init__(self, returncode: int):
-                        self.returncode = returncode
-                
-                raise TaskError.from_process(FakeProcess(returncode))
+                raise TaskError(
+                    command=task_cmd,
+                    returncode=returncode,
+                    stdout=None,
+                    stderr=None,
+                )
 
     def _render_context(self) -> AnyByStrMutableMapping:
         """Produce render context for Jinja."""
@@ -882,7 +883,7 @@ class Worker:
         
         if not self._render_allowed(
             render_result.dst_relpath,
-            expected_contents=render_result.new_content,
+            expected_contents=render_result.expected_contents,
             expected_mode=render_result.src_mode,
         ):
             return
@@ -977,9 +978,16 @@ class Worker:
         Args:
             render_result: The FileRenderResult to apply.
         """
+        if not render_result.is_symlink:
+            raise ValueError("render_result must have is_symlink=True for symlink rendering")
+        
+        symlink_target = render_result.symlink_target
+        if symlink_target is None:
+            raise ValueError("render_result must have symlink_target set for symlink rendering")
+
         if not self._render_allowed(
             render_result.dst_relpath,
-            expected_contents=render_result.symlink_target or Path(),
+            expected_contents=render_result.expected_contents,
             is_symlink=True,
         ):
             return
@@ -991,7 +999,7 @@ class Worker:
         if self._io_adapters.fs.is_symlink(dst_abspath) or self._io_adapters.fs.exists(dst_abspath):
             self._io_adapters.fs.unlink(dst_abspath)
         self._io_adapters.fs.mkdir(dst_abspath.parent, parents=True, exist_ok=True)
-        self._io_adapters.fs.symlink_to(dst_abspath, render_result.symlink_target or Path())
+        self._io_adapters.fs.symlink_to(dst_abspath, symlink_target)
         if sys.platform == "darwin":
             self._io_adapters.fs.lchmod(dst_abspath, render_result.src_mode)
 
