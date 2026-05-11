@@ -281,7 +281,9 @@ def test_preview_mode_does_not_execute_tasks(
         }
     )
 
-    worker = copier.run_copy(str(src), dst, defaults=True, preview=True, quiet=True)
+    worker = copier.run_copy(
+        str(src), dst, defaults=True, preview=True, quiet=True, unsafe=True
+    )
 
     assert not (dst / "file.txt").exists()
     assert worker.preview is True
