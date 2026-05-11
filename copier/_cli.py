@@ -173,6 +173,11 @@ class _Subcommand(cli.Application):  # type: ignore[misc]
         default=False,
         help="Skip template tasks execution",
     )
+    preview = cli.Flag(
+        ["-p", "--preview"],
+        default=False,
+        help="Preview the rendered directory tree without writing files to disk",
+    )
 
     @cli.switch(  # type: ignore[untyped-decorator]
         ["-d", "--data"],
@@ -270,6 +275,7 @@ class CopierCopySubApp(_Subcommand):
                 quiet=self.quiet,
                 unsafe=self.unsafe,
                 skip_tasks=self.skip_tasks,
+                preview=self.preview,
             )
 
         return _handle_exceptions(inner)
@@ -347,6 +353,7 @@ class CopierRecopySubApp(_Subcommand):
                 unsafe=self.unsafe,
                 skip_answered=self.skip_answered,
                 skip_tasks=self.skip_tasks,
+                preview=self.preview,
             )
 
         return _handle_exceptions(inner)
@@ -432,6 +439,7 @@ class CopierUpdateSubApp(_Subcommand):
                 unsafe=self.unsafe,
                 skip_answered=self.skip_answered,
                 skip_tasks=self.skip_tasks,
+                preview=self.preview,
             )
 
         return _handle_exceptions(inner)

@@ -226,6 +226,9 @@ class Worker:
 
         skip_tasks:
             When `True`, skip template tasks execution.
+
+        preview:
+            When `True`, only preview the rendered directory tree without writing files to disk.
     """
 
     # NOTE: attributes are fully documented in [creating.md](../docs/creating.md)
@@ -251,9 +254,11 @@ class Worker:
     unsafe: bool = False
     skip_answered: bool = False
     skip_tasks: bool = False
+    preview: bool = False
 
     answers: AnswersMap = field(default_factory=AnswersMap, init=False)
     _cleanup_hooks: list[Callable[[], None]] = field(default_factory=list, init=False)
+    _preview_tree: list[Path] = field(default_factory=list, init=False)
 
     def __enter__(self) -> Worker:
         """Allow using worker as a context manager."""
@@ -449,6 +454,7 @@ class Worker:
                 "unsafe": lambda: self.unsafe,
                 "skip_answered": lambda: self.skip_answered,
                 "skip_tasks": lambda: self.skip_tasks,
+                "preview": lambda: self.preview,
                 "sep": lambda: os.sep,
                 "os": lambda: OS,
             }
@@ -764,8 +770,76 @@ class Worker:
         """Get a callable to match paths against all skip-if-exists patterns."""
         return self._path_matcher(map(self._render_string, self.all_skip_if_exists))
 
+    def _collect_preview_tree(self) -> None:
+        """Collect all rendered paths for preview without writing to disk."""
+        follow_symlinks = not self.template.preserve_symlinks
+        dst_root = self.dst_path.resolve()
+        for src in scantree(str(self.template_copy_root), follow_symlinks):
+            src_abspath = Path(src.path)
+            if (
+                src_abspath.is_symlink()
+                and not self.template.preserve_symlinks
+                and not (src_abspath.resolve()).is_relative_to(
+                    self.template.local_abspath
+                )
+            ):
+                raise ForbiddenPathError(
+                    path=src_abspath.relative_to(self.template_copy_root)
+                )
+            dst_relpaths_ctxs = self._render_path(
+                Path(src_abspath).relative_to(self.template_copy_root)
+            )
+            for dst_relpath, _ctx in dst_relpaths_ctxs:
+                dst_abspath = dst_root / dst_relpath
+                if dst_abspath.is_symlink() and self.template.preserve_symlinks:
+                    dst_realpath = dst_abspath.parent.resolve() / dst_abspath.name
+                else:
+                    dst_realpath = dst_abspath.resolve()
+                if not dst_realpath.is_relative_to(dst_root):
+                    raise ForbiddenPathError(path=dst_relpath)
+                if self.match_exclude(dst_relpath):
+                    continue
+                self._preview_tree.append(dst_relpath)
+
+    def _format_tree(self) -> str:
+        """Format the collected preview tree as a directory tree string."""
+        if not self._preview_tree:
+            return ""
+
+        paths = sorted(self._preview_tree)
+        tree: dict[str, Any] = {}
+
+        for path in paths:
+            parts = path.parts
+            current = tree
+            for part in parts:
+                if part not in current:
+                    current[part] = {}
+                current = current[part]
+
+        def format_node(node: dict[str, Any], prefix: str = "") -> list[str]:
+            lines: list[str] = []
+            items = list(node.items())
+            for i, (name, children) in enumerate(items):
+                is_last_item = i == len(items) - 1
+                connector = "└── " if is_last_item else "├── "
+                lines.append(prefix + connector + name)
+                if children:
+                    extension = "    " if is_last_item else "│   "
+                    lines.extend(format_node(children, prefix + extension))
+            return lines
+
+        root_name = self.dst_path.name or "."
+        lines = [root_name]
+        lines.extend(format_node(tree))
+        return "\n".join(lines)
+
     def _render_template(self) -> None:
         """Render the template in the subproject root."""
+        if self.preview:
+            self._collect_preview_tree()
+            return
+
         follow_symlinks = not self.template.preserve_symlinks
         dst_root = self.dst_path.resolve()
         for src in scantree(str(self.template_copy_root), follow_symlinks):
@@ -1239,6 +1313,21 @@ class Worker:
         self._print_message(self.template.message_before_copy)
         with Phase.use(Phase.PROMPT):
             self._ask()
+
+        if self.preview:
+            if not self.quiet:
+                print(
+                    f"\nPreviewing template version {self.template.version}",
+                    file=sys.stderr,
+                )
+            with Phase.use(Phase.RENDER):
+                self._render_template()
+            if not self.quiet:
+                print("\nPreview of generated directory tree:", file=sys.stderr)
+                print(self._format_tree(), file=sys.stderr)
+                print("\nThis is a preview - no files were written to disk.", file=sys.stderr)
+            return
+
         was_existing = self.subproject.local_abspath.exists()
         try:
             if not self.quiet:
@@ -1681,6 +1770,7 @@ def run_copy(
     quiet: bool = False,
     unsafe: bool = False,
     skip_tasks: bool = False,
+    preview: bool = False,
 ) -> Worker:
     """Copy a template to a destination, from zero."""
     with Worker(
@@ -1709,6 +1799,7 @@ def run_copy(
         quiet=quiet,
         unsafe=unsafe,
         skip_tasks=skip_tasks,
+        preview=preview,
     ) as worker:
         worker.run_copy()
     return worker
@@ -1733,6 +1824,7 @@ def run_recopy(
     unsafe: bool = False,
     skip_answered: bool = False,
     skip_tasks: bool = False,
+    preview: bool = False,
 ) -> Worker:
     """Update a subproject from its template, discarding subproject evolution."""
     with Worker(
@@ -1761,6 +1853,7 @@ def run_recopy(
         unsafe=unsafe,
         skip_answered=skip_answered,
         skip_tasks=skip_tasks,
+        preview=preview,
     ) as worker:
         worker.run_recopy()
     return worker
@@ -1787,6 +1880,7 @@ def run_update(
     unsafe: bool = False,
     skip_answered: bool = False,
     skip_tasks: bool = False,
+    preview: bool = False,
 ) -> Worker:
     """Update a subproject, from its template."""
     with Worker(
@@ -1817,6 +1911,7 @@ def run_update(
         unsafe=unsafe,
         skip_answered=skip_answered,
         skip_tasks=skip_tasks,
+        preview=preview,
     ) as worker:
         worker.run_update()
     return worker
