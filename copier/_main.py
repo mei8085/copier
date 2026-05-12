@@ -71,12 +71,16 @@ from ._user_data import AnswersMap, Question, load_answersfile_data
 from ._vcs import get_git, is_git_available
 from .errors import (
     ConfigFileError,
+    Conflict,
+    ConflictReport,
+    ConflictType,
     CopierAnswersInterrupt,
     ExtensionNotFoundError,
     ForbiddenPathError,
     InteractiveSessionError,
     TaskError,
     UnsafeTemplateError,
+    UpdateConflictError,
     UserMessageError,
     YieldTagInFileError,
 )
@@ -251,6 +255,7 @@ class Worker:
     unsafe: bool = False
     skip_answered: bool = False
     skip_tasks: bool = False
+    conflict_report: bool = False
 
     answers: AnswersMap = field(default_factory=AnswersMap, init=False)
     _cleanup_hooks: list[Callable[[], None]] = field(default_factory=list, init=False)
@@ -1633,6 +1638,16 @@ class Worker:
                 self.template.migration_tasks("after", self.subproject.template)  # type: ignore[arg-type]
             )
 
+        # Generate conflict report if requested
+        if self.conflict_report:
+            report = _generate_conflict_report(subproject_top, self.conflict)
+            if report.total > 0:
+                message = (
+                    f"Update completed with {report.total} conflicts in "
+                    f"{report.files_affected} files."
+                )
+                raise UpdateConflictError(message, report)
+
     def _git_initialize_repo(self) -> None:
         """Initialize a git repository in the current directory."""
         git = get_git()
@@ -1787,6 +1802,7 @@ def run_update(
     unsafe: bool = False,
     skip_answered: bool = False,
     skip_tasks: bool = False,
+    conflict_report: bool = False,
 ) -> Worker:
     """Update a subproject, from its template."""
     with Worker(
@@ -1817,6 +1833,7 @@ def run_update(
         unsafe=unsafe,
         skip_answered=skip_answered,
         skip_tasks=skip_tasks,
+        conflict_report=conflict_report,
     ) as worker:
         worker.run_update()
     return worker
@@ -1865,6 +1882,139 @@ def get_update_data(
         latest_version = str(worker.template.version)
 
     return (update_available, current_version, latest_version)
+
+
+def _detect_inline_conflicts(file_path: Path) -> list[Conflict]:
+    """Detect inline conflicts in a file.
+
+    Args:
+        file_path: Path to the file to check.
+
+    Returns:
+        List of Conflict objects found in the file.
+    """
+    conflicts: list[Conflict] = []
+    start_line: int | None = None
+    context_lines: list[str] = []
+
+    try:
+        lines = file_path.read_text().splitlines(keepends=True)
+    except (UnicodeDecodeError, FileNotFoundError, PermissionError):
+        return conflicts
+
+    for i, line in enumerate(lines, start=1):
+        stripped = line.rstrip()
+        if stripped == "<<<<<<< before updating":
+            start_line = i
+            context_lines = lines[max(0, i - 3): i]
+        elif stripped == ">>>>>>> after updating" and start_line is not None:
+            end_line = i
+            context = "".join(context_lines + lines[start_line - 1:end_line]).rstrip()
+            conflicts.append(
+                Conflict(
+                    file=str(file_path),
+                    start_line=start_line,
+                    end_line=end_line,
+                    conflict_type=ConflictType.INLINE,
+                    context=context,
+                )
+            )
+            start_line = None
+            context_lines = []
+
+    return conflicts
+
+
+def _detect_reject_conflicts(project_root: Path) -> list[Conflict]:
+    """Detect conflicts from .rej files.
+
+    Args:
+        project_root: Path to the project root directory.
+
+    Returns:
+        List of Conflict objects found from .rej files.
+    """
+    conflicts: list[Conflict] = []
+    for rej_file in project_root.rglob("*.rej"):
+        if not rej_file.is_file():
+            continue
+        original_file = rej_file.with_suffix("")
+        context = None
+        try:
+            context = rej_file.read_text().rstrip()
+        except (UnicodeDecodeError, PermissionError):
+            pass
+        conflicts.append(
+            Conflict(
+                file=str(original_file),
+                start_line=1,
+                end_line=1,
+                conflict_type=ConflictType.REJECT,
+                context=context,
+            )
+        )
+    return conflicts
+
+
+def _generate_conflict_report(
+    subproject_top: Path,
+    conflict_mode: Literal["inline", "rej"],
+) -> ConflictReport:
+    """Generate a conflict report after update.
+
+    Args:
+        subproject_top: Path to the subproject root directory.
+        conflict_mode: Conflict mode used ("inline" or "rej").
+
+    Returns:
+        A ConflictReport containing all detected conflicts.
+    """
+    all_conflicts: list[Conflict] = []
+
+    if conflict_mode == "inline":
+        for file_path in subproject_top.rglob("*"):
+            if not file_path.is_file() or file_path.name.endswith(".rej"):
+                continue
+            try:
+                relative_file = file_path.relative_to(subproject_top)
+                if relative_file.parts and relative_file.parts[0] == ".git":
+                    continue
+                conflicts = _detect_inline_conflicts(file_path)
+                all_conflicts.extend(
+                    Conflict(
+                        file=str(relative_file),
+                        start_line=c.start_line,
+                        end_line=c.end_line,
+                        conflict_type=c.conflict_type,
+                        context=c.context,
+                    )
+                    for c in conflicts
+                )
+            except ValueError:
+                continue
+    else:
+        all_conflicts = []
+        for c in _detect_reject_conflicts(subproject_top):
+            try:
+                relative_file = Path(c.file).relative_to(subproject_top)
+                all_conflicts.append(
+                    Conflict(
+                        file=str(relative_file),
+                        start_line=c.start_line,
+                        end_line=c.end_line,
+                        conflict_type=c.conflict_type,
+                        context=c.context,
+                    )
+                )
+            except ValueError:
+                all_conflicts.append(c)
+
+    files_affected = len({c.file for c in all_conflicts})
+    return ConflictReport(
+        conflicts=all_conflicts,
+        total=len(all_conflicts),
+        files_affected=files_affected,
+    )
 
 
 def _remove_old_files(prefix: Path, cmp: dircmp[str], rm_common: bool = False) -> None:

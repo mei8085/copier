@@ -2571,3 +2571,192 @@ index f163f4b,d20125d..0000000
 ++>>>>>>> after updating
 """)
         # editorconfig-checker-enable
+
+
+def test_update_conflict_report_inline(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that conflict_report flag generates structured conflict report for inline conflicts."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    build_file_tree(
+        {
+            (src / "test.txt"): "upstream version 1",
+            (src / "{{_copier_conf.answers_file}}.jinja"): (
+                "{{_copier_answers|to_nice_yaml}}"
+            ),
+        }
+    )
+    with local.cwd(src):
+        git_init("hello template")
+        git("tag", "v1")
+
+    run_copy(str(src), dst, defaults=True, overwrite=True)
+    with local.cwd(dst):
+        git_init("hello project")
+        Path("test.txt").write_text("upstream version 1 + downstream")
+        git("commit", "-am", "downstream edit")
+
+    with local.cwd(src):
+        Path("test.txt").write_text("upstream version 2")
+        git("add", ".", "-A")
+        git("commit", "-m", "update template")
+        git("tag", "v2")
+
+    from copier import UpdateConflictError
+
+    with pytest.raises(UpdateConflictError) as exc_info:
+        run_update(
+            dst_path=dst,
+            defaults=True,
+            overwrite=True,
+            conflict="inline",
+            conflict_report=True,
+        )
+
+    report = exc_info.value.report
+    assert report.total == 1
+    assert report.files_affected == 1
+    assert len(report.conflicts) == 1
+    conflict = report.conflicts[0]
+    assert conflict.file == "test.txt"
+    assert conflict.start_line == 1
+    assert conflict.conflict_type.value == "inline"
+
+
+def test_update_conflict_report_rej(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that conflict_report flag generates structured conflict report for reject files."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    build_file_tree(
+        {
+            (src / "test.txt"): "upstream version 1",
+            (src / "{{_copier_conf.answers_file}}.jinja"): (
+                "{{_copier_answers|to_nice_yaml}}"
+            ),
+        }
+    )
+    with local.cwd(src):
+        git_init("hello template")
+        git("tag", "v1")
+
+    run_copy(str(src), dst, defaults=True, overwrite=True)
+    with local.cwd(dst):
+        git_init("hello project")
+        Path("test.txt").write_text("upstream version 1 + downstream")
+        git("commit", "-am", "downstream edit")
+
+    with local.cwd(src):
+        Path("test.txt").write_text("upstream version 2")
+        git("add", ".", "-A")
+        git("commit", "-m", "update template")
+        git("tag", "v2")
+
+    from copier import UpdateConflictError
+
+    with pytest.raises(UpdateConflictError) as exc_info:
+        run_update(
+            dst_path=dst,
+            defaults=True,
+            overwrite=True,
+            conflict="rej",
+            conflict_report=True,
+        )
+
+    report = exc_info.value.report
+    assert report.total == 1
+    assert report.files_affected == 1
+    assert len(report.conflicts) == 1
+    conflict = report.conflicts[0]
+    assert conflict.file == "test.txt"
+    assert conflict.conflict_type.value == "reject"
+
+
+def test_update_conflict_report_no_conflicts(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that conflict_report flag does not raise when no conflicts."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    build_file_tree(
+        {
+            (src / "test.txt"): "upstream version 1",
+            (src / "{{_copier_conf.answers_file}}.jinja"): (
+                "{{_copier_answers|to_nice_yaml}}"
+            ),
+        }
+    )
+    with local.cwd(src):
+        git_init("hello template")
+        git("tag", "v1")
+
+    run_copy(str(src), dst, defaults=True, overwrite=True)
+    with local.cwd(dst):
+        git_init("hello project")
+        git("commit", "-am", "initial commit")
+
+    with local.cwd(src):
+        Path("test.txt").write_text("upstream version 2")
+        git("add", ".", "-A")
+        git("commit", "-m", "update template")
+        git("tag", "v2")
+
+    worker = run_update(
+        dst_path=dst,
+        defaults=True,
+        overwrite=True,
+        conflict="inline",
+        conflict_report=True,
+    )
+    assert worker is not None
+    assert Path(dst / "test.txt").read_text() == "upstream version 2"
+
+
+def test_update_cli_conflict_report_exit_code(
+    tmp_path_factory: pytest.TempPathFactory, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test that CLI returns exit code 8 when conflicts are found with conflict_report flag."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    build_file_tree(
+        {
+            (src / "test.txt"): "upstream version 1",
+            (src / "{{_copier_conf.answers_file}}.jinja"): (
+                "{{_copier_answers|to_nice_yaml}}"
+            ),
+        }
+    )
+    with local.cwd(src):
+        git_init("hello template")
+        git("tag", "v1")
+
+    CopierApp.run(
+        ["copier", "copy", str(src), str(dst), "--defaults", "--overwrite"], exit=False
+    )
+    with local.cwd(dst):
+        git_init("hello project")
+        Path("test.txt").write_text("upstream version 1 + downstream")
+        git("commit", "-am", "downstream edit")
+
+    with local.cwd(src):
+        Path("test.txt").write_text("upstream version 2")
+        git("add", ".", "-A")
+        git("commit", "-m", "update template")
+        git("tag", "v2")
+
+    with local.cwd(dst):
+        exit_code = CopierApp.run(
+            ["copier", "update", "--defaults", "--conflict-report"], exit=False
+        )
+        assert exit_code == 8
+
+        captured = capsys.readouterr()
+        import json
+
+        report = json.loads(captured.out)
+        assert report["total"] == 1
+        assert report["files_affected"] == 1
+        assert len(report["conflicts"]) == 1
+        assert report["conflicts"][0]["file"] == "test.txt"

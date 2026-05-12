@@ -70,7 +70,37 @@ from plumbum import cli, colors
 from ._main import get_update_data, run_copy, run_recopy, run_update
 from ._tools import copier_version, try_enum
 from ._types import AnyByStrDict, VcsRef
-from .errors import UnsafeTemplateError, UserMessageError
+from .errors import (
+    Conflict,
+    ConflictReport,
+    ConflictType,
+    UnsafeTemplateError,
+    UpdateConflictError,
+    UserMessageError,
+)
+
+
+def _conflict_to_dict(conflict: Conflict) -> dict[str, Any]:
+    """Convert a Conflict object to a dictionary."""
+    return {
+        "file": conflict.file,
+        "start_line": conflict.start_line,
+        "end_line": conflict.end_line,
+        "conflict_type": str(conflict.conflict_type),
+        "context": conflict.context,
+    }
+
+
+def _conflict_report_to_json(report: ConflictReport) -> str:
+    """Convert a ConflictReport to JSON string."""
+    return json.dumps(
+        {
+            "conflicts": [_conflict_to_dict(c) for c in report.conflicts],
+            "total": report.total,
+            "files_affected": report.files_affected,
+        },
+        indent=2,
+    )
 
 
 def _handle_exceptions(method: Callable[[], int | None]) -> int:
@@ -82,6 +112,9 @@ def _handle_exceptions(method: Callable[[], int | None]) -> int:
                 return exit_code
         except KeyboardInterrupt:
             raise UserMessageError("Execution stopped by user")
+    except UpdateConflictError as error:
+        print(_conflict_report_to_json(error.report), file=sys.stdout)
+        return 0b1000
     except UserMessageError as error:
         print(colors.red | error.message, file=sys.stderr)
         return 1
@@ -401,6 +434,14 @@ class CopierUpdateSubApp(_Subcommand):
         default=False,
         help="Skip questions that have already been answered",
     )
+    conflict_report = cli.Flag(
+        ["--conflict-report"],
+        default=False,
+        help=(
+            "Output a structured conflict report (JSON format) if conflicts are detected. "
+            "Returns exit code 8 when conflicts are found."
+        ),
+    )
 
     def main(self, destination_path: cli.ExistingDirectory = ".") -> int:
         """Call [run_update][copier.run_update].
@@ -432,6 +473,7 @@ class CopierUpdateSubApp(_Subcommand):
                 unsafe=self.unsafe,
                 skip_answered=self.skip_answered,
                 skip_tasks=self.skip_tasks,
+                conflict_report=self.conflict_report,
             )
 
         return _handle_exceptions(inner)

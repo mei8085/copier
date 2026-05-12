@@ -10,6 +10,12 @@ from . import _main
 from ._deprecation import deprecate_member_as_internal
 from ._settings import Settings, load_settings
 from ._types import Phase, VcsRef
+from .errors import (
+    Conflict,
+    ConflictReport,
+    ConflictType,
+    UpdateConflictError,
+)
 
 if TYPE_CHECKING:
     from ._main import *  # noqa: F403
@@ -38,4 +44,8 @@ __all__ = [
     "Phase",
     "Settings",
     "VcsRef",
+    "Conflict",
+    "ConflictReport",
+    "ConflictType",
+    "UpdateConflictError",
 ]

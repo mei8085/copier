@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import TYPE_CHECKING
@@ -48,6 +50,10 @@ __all__ = [
     "MissingSettingsWarning",
     "MissingFileWarning",
     "InteractiveSessionError",
+    "ConflictType",
+    "Conflict",
+    "ConflictReport",
+    "UpdateConflictError",
 ]
 
 
@@ -240,3 +246,56 @@ class InteractiveSessionError(UserMessageError):
 
 class SettingsError(CopierError):
     """Exception raised when the settings are invalid."""
+
+
+class ConflictType(str, Enum):
+    """Type of conflict."""
+
+    INLINE = "inline"
+    REJECT = "reject"
+
+
+@dataclass(frozen=True)
+class Conflict:
+    """A conflict detected during update.
+
+    Attributes:
+        file: Relative path to the file with conflict.
+        start_line: Line number where conflict starts (1-based).
+        end_line: Line number where conflict ends (1-based).
+        conflict_type: Type of conflict (inline or reject).
+        context: Optional context lines around the conflict for clarity.
+    """
+
+    file: str
+    start_line: int
+    end_line: int
+    conflict_type: ConflictType
+    context: str | None = None
+
+
+@dataclass(frozen=True)
+class ConflictReport:
+    """A report of conflicts detected during update.
+
+    Attributes:
+        conflicts: List of conflicts found.
+        total: Total number of conflicts.
+        files_affected: Number of files affected by conflicts.
+    """
+
+    conflicts: list[Conflict]
+    total: int
+    files_affected: int
+
+
+class UpdateConflictError(UserMessageError):
+    """Exception raised when update conflicts are detected.
+
+    Attributes:
+        report: The conflict report with detailed information.
+    """
+
+    def __init__(self, message: str, report: ConflictReport):
+        super().__init__(message)
+        self.report = report
