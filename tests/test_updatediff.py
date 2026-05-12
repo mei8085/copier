@@ -2677,12 +2677,20 @@ def test_update_conflict_report_rej(
 def test_update_conflict_report_no_conflicts(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    """Test that conflict_report flag does not raise when no conflicts."""
+    """Test that conflict_report flag does not raise when no conflicts.
+
+    This test uses a truly non-conflicting but changed scenario:
+    - Template v1 has file_a.txt and file_b.txt
+    - Downstream modifies only file_a.txt
+    - Template v2 modifies only file_b.txt
+    - No conflicts occur when updating
+    """
     src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
 
     build_file_tree(
         {
-            (src / "test.txt"): "upstream version 1",
+            (src / "file_a.txt"): "file a version 1",
+            (src / "file_b.txt"): "file b version 1",
             (src / "{{_copier_conf.answers_file}}.jinja"): (
                 "{{_copier_answers|to_nice_yaml}}"
             ),
@@ -2695,13 +2703,13 @@ def test_update_conflict_report_no_conflicts(
     run_copy(str(src), dst, defaults=True, overwrite=True)
     with local.cwd(dst):
         git_init("hello project")
-        Path("test.txt").write_text("upstream version 2")
-        git("commit", "-am", "downstream change")
+        Path("file_a.txt").write_text("file a downstream change")
+        git("commit", "-am", "downstream change to file_a")
 
     with local.cwd(src):
-        Path("test.txt").write_text("upstream version 2")
+        Path("file_b.txt").write_text("file b version 2")
         git("add", ".", "-A")
-        git("commit", "-m", "update template")
+        git("commit", "-m", "template change to file_b")
         git("tag", "v2")
 
     worker = run_update(
@@ -2712,7 +2720,8 @@ def test_update_conflict_report_no_conflicts(
         conflict_report=True,
     )
     assert worker is not None
-    assert Path(dst / "test.txt").read_text() == "upstream version 2"
+    assert Path(dst / "file_a.txt").read_text() == "file a downstream change"
+    assert Path(dst / "file_b.txt").read_text() == "file b version 2"
 
 
 def test_update_cli_conflict_report_exit_code(
@@ -2762,3 +2771,53 @@ def test_update_cli_conflict_report_exit_code(
         assert len(report["conflicts"]) == 1
         assert report["conflicts"][0]["file"] == "test.txt"
         assert report["conflicts"][0]["conflict_type"] == "inline"
+
+
+def test_update_cli_conflict_report_no_conflicts(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that CLI returns exit code 0 and no JSON output when no conflicts.
+
+    This test uses a truly non-conflicting but changed scenario:
+    - Template v1 has file_a.txt and file_b.txt
+    - Downstream modifies only file_a.txt
+    - Template v2 modifies only file_b.txt
+    - No conflicts occur when updating
+    """
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    build_file_tree(
+        {
+            (src / "file_a.txt"): "file a version 1",
+            (src / "file_b.txt"): "file b version 1",
+            (src / "{{_copier_conf.answers_file}}.jinja"): (
+                "{{_copier_answers|to_nice_yaml}}"
+            ),
+        }
+    )
+    with local.cwd(src):
+        git_init("hello template")
+        git("tag", "v1")
+
+    _, exit_code = CopierApp.run(
+        ["copier", "copy", str(src), str(dst), "--defaults", "--overwrite"], exit=False
+    )
+    with local.cwd(dst):
+        git_init("hello project")
+        Path("file_a.txt").write_text("file a downstream change")
+        git("commit", "-am", "downstream change to file_a")
+
+    with local.cwd(src):
+        Path("file_b.txt").write_text("file b version 2")
+        git("add", ".", "-A")
+        git("commit", "-m", "template change to file_b")
+        git("tag", "v2")
+
+    with local.cwd(dst):
+        _, exit_code = CopierApp.run(
+            ["copier", "update", "--defaults", "--conflict-report"], exit=False
+        )
+        assert exit_code == 0
+
+        assert Path(dst / "file_a.txt").read_text() == "file a downstream change"
+        assert Path(dst / "file_b.txt").read_text() == "file b version 2"
