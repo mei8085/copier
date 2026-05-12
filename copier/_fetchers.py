@@ -8,6 +8,7 @@ import re
 import tarfile
 import zipfile
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Literal
@@ -23,10 +24,19 @@ from ._vcs import (
 FETCHER_PREFIX = f"{__name__}.fetcher."
 
 
+@dataclass
+class OciImageRef:
+    """Parsed OCI image reference."""
+    registry: str
+    repository: str
+    tag: str | None
+    digest: str | None
+
+
 class TemplateFetcher(ABC):
     """Abstract base class for template fetchers."""
 
-    protocol: Literal["git", "http", "https", "oci"]
+    protocol: Literal["git", "http", "oci"]
 
     @abstractmethod
     def can_handle(self, url: str) -> bool:
@@ -99,9 +109,9 @@ class HttpFetcher(TemplateFetcher):
 
         import urllib.request
 
-        headers = {}
-        if ref:
-            headers["Authorization"] = f"Bearer {ref}" if not ref.startswith(("sha256:", "md5:")) else ""
+        headers: dict[str, str] = {}
+        if ref and not ref.startswith(("sha256:", "md5:")):
+            headers["Authorization"] = f"Bearer {ref}"
 
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=60) as response:
@@ -154,9 +164,17 @@ class OciFetcher(TemplateFetcher):
     protocol: Literal["oci"] = "oci"
 
     OCI_PREFIXES = ("oci://", "docker://", "registry://")
+    DEFAULT_REGISTRY = "registry-1.docker.io"
+    DEFAULT_TAG = "latest"
 
     def can_handle(self, url: str) -> bool:
-        return url.startswith(self.OCI_PREFIXES) or self._is_oci_reference(url)
+        if url.startswith(self.OCI_PREFIXES):
+            return True
+        if url.startswith(HttpFetcher.HTTP_PREFIXES):
+            return False
+        if GitFetcher().can_handle(url):
+            return False
+        return self._is_oci_reference(url)
 
     def fetch(
         self,
@@ -169,8 +187,11 @@ class OciFetcher(TemplateFetcher):
             location = mkdtemp(prefix=FETCHER_PREFIX)
 
         image_ref = self._parse_oci_url(url)
-        if ref and "@" not in image_ref and ":" not in image_ref.rsplit("/", 1)[-1]:
-            image_ref = f"{image_ref}:{ref}"
+        if ref is not None and image_ref.tag is None and image_ref.digest is None:
+            if ref.startswith("sha256:"):
+                image_ref.digest = ref
+            else:
+                image_ref.tag = ref
 
         layers = self._download_oci_artifact(image_ref)
         extracted_path = Path(location) / "extracted"
@@ -183,69 +204,86 @@ class OciFetcher(TemplateFetcher):
         result = self._find_template_root(extracted_path)
         return str(result)
 
-    def _parse_oci_url(self, url: str) -> str:
+    def _parse_oci_url(self, url: str) -> OciImageRef:
         for prefix in self.OCI_PREFIXES:
             if url.startswith(prefix):
-                return url[len(prefix):]
-        return url
+                url = url[len(prefix):]
+                break
+        return self._parse_oci_reference(url)
+
+    def _parse_oci_reference(self, ref: str) -> OciImageRef:
+        tag: str | None = None
+        digest: str | None = None
+        registry = self.DEFAULT_REGISTRY
+
+        if "@sha256:" in ref:
+            ref, digest = ref.split("@", 1)
+
+        last_slash_idx = ref.rfind("/")
+        if last_slash_idx == -1:
+            if ":" in ref:
+                ref, tag = ref.split(":", 1)
+            repository = ref
+        else:
+            first_part = ref[:last_slash_idx]
+            last_part = ref[last_slash_idx + 1:]
+
+            if ":" in last_part:
+                last_part, tag = last_part.split(":", 1)
+
+            if "." in first_part or ":" in first_part:
+                registry = first_part
+                repository = last_part
+            else:
+                repository = f"{first_part}/{last_part}"
+
+        return OciImageRef(registry=registry, repository=repository, tag=tag, digest=digest)
 
     def _is_oci_reference(self, url: str) -> bool:
-        oci_pattern = r"^([a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?/)?[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?:[:@][a-zA-Z0-9_.-]+)?$"
-        return bool(re.match(oci_pattern, url))
+        try:
+            parsed = self._parse_oci_reference(url)
+            return bool(parsed.repository)
+        except Exception:
+            return False
 
-    def _download_oci_artifact(self, image_ref: str) -> list[bytes]:
+    def _download_oci_artifact(self, image_ref: OciImageRef) -> list[bytes]:
         import urllib.request
 
-        if "@" in image_ref:
-            name_part, digest = image_ref.rsplit("@", 1)
-        elif ":" in image_ref and not image_ref.startswith("http"):
-            parts = image_ref.rsplit(":", 1)
-            if "/" in parts[1]:
-                name_part = image_ref
-                tag = "latest"
-            else:
-                name_part, tag = parts
-        else:
-            name_part = image_ref
-            tag = "latest"
+        registry_url = f"https://{image_ref.registry}"
+        reference = image_ref.digest or (image_ref.tag or self.DEFAULT_TAG)
 
-        if "/" in name_part:
-            registry, rest = name_part.split("/", 1)
-            if "." in registry or ":" in registry:
-                repository = rest
-            else:
-                registry = "registry-1.docker.io"
-                repository = name_part
-        else:
-            registry = "registry-1.docker.io"
-            repository = name_part
+        token = self._get_auth_token(image_ref.registry, image_ref.repository)
 
-        registry_url = f"https://{registry}"
-
-        token = self._get_auth_token(registry_url, repository)
-
-        manifest_url = f"{registry_url}/v2/{repository}/manifests/{tag}"
-        manifest = self._make_request(manifest_url, token, accept="application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json")
+        manifest_url = f"{registry_url}/v2/{image_ref.repository}/manifests/{reference}"
+        manifest = self._make_request(
+            manifest_url,
+            token,
+            accept="application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json",
+        )
 
         manifest_json = json.loads(manifest)
         layers: list[bytes] = []
 
         for layer in manifest_json.get("layers", []):
             digest = layer["digest"]
-            layer_url = f"{registry_url}/v2/{repository}/blobs/{digest}"
+            layer_url = f"{registry_url}/v2/{image_ref.repository}/blobs/{digest}"
             layer_data = self._make_request(layer_url, token)
             layers.append(layer_data)
 
         return layers
 
-    def _get_auth_token(self, registry_url: str, repository: str) -> str | None:
+    def _get_auth_token(self, registry: str, repository: str) -> str | None:
         import urllib.request
 
-        auth_url = f"https://auth.{registry_url.replace('https://', '')}/token?scope=repository:{repository}:pull&service=registry.docker.io"
+        if registry == self.DEFAULT_REGISTRY:
+            auth_url = f"https://auth.{registry}/token?scope=repository:{repository}:pull&service=registry.docker.io"
+        else:
+            auth_url = f"https://{registry}/token?scope=repository:{repository}:pull"
+
         try:
             with urllib.request.urlopen(auth_url, timeout=30) as response:
                 token_data = json.loads(response.read())
-                return token_data.get("token")
+                return token_data.get("token") or token_data.get("access_token")
         except Exception:
             return None
 
@@ -279,8 +317,8 @@ def get_fetcher(url: str) -> TemplateFetcher | None:
     """Get the appropriate fetcher for the given URL.
 
     The order of checking is important:
-    1. First check if it's an OCI URL (most specific)
-    2. Then check if it's a Git URL (including http git URLs)
+    1. First check if it's an OCI URL (most specific protocol prefixes)
+    2. Then check if it's a Git URL (using the existing get_repo logic)
     3. Finally check if it's a generic HTTP(S) URL
 
     Args:
