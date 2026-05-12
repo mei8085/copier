@@ -236,3 +236,119 @@ def test_inspect_bracket_envops(tmp_path_factory: pytest.TempPathFactory) -> Non
     assert '"a" -> "b"' in result
     assert 'label="when"' in result
     assert 'label="default"' in result
+
+
+def test_inspect_list_default_dependency(tmp_path_factory: pytest.TempPathFactory) -> None:
+    src = tmp_path_factory.mktemp("src")
+    build_file_tree(
+        {
+            (src / "copier.yml"): dedent(
+                """\
+                base_name:
+                    type: str
+                choices_list:
+                    type: str
+                    default:
+                        - "option_{{ base_name }}_1"
+                        - "option_{{ base_name }}_2"
+                        - "static_option"
+                """
+            ),
+        }
+    )
+
+    result = run_inspect(str(src), format="dot")
+
+    assert "digraph question_dependencies {" in result
+    assert '"base_name" -> "choices_list"' in result
+    assert 'label="default"' in result
+
+
+def test_inspect_dict_default_dependency(tmp_path_factory: pytest.TempPathFactory) -> None:
+    src = tmp_path_factory.mktemp("src")
+    build_file_tree(
+        {
+            (src / "copier.yml"): dedent(
+                """\
+                project_name:
+                    type: str
+                config:
+                    type: yaml
+                    default:
+                        name: "{{ project_name }}"
+                        version: "1.0.0"
+                        settings:
+                            enabled: true
+                            display_name: "My {{ project_name }} Project"
+                """
+            ),
+        }
+    )
+
+    result = run_inspect(str(src), format="dot")
+
+    assert "digraph question_dependencies {" in result
+    assert '"project_name" -> "config"' in result
+    assert 'label="default"' in result
+
+
+def test_inspect_nested_mixed_dependency(tmp_path_factory: pytest.TempPathFactory) -> None:
+    src = tmp_path_factory.mktemp("src")
+    build_file_tree(
+        {
+            (src / "copier.yml"): dedent(
+                """\
+                app_name:
+                    type: str
+                env_name:
+                    type: str
+                complex_config:
+                    type: yaml
+                    default:
+                        services:
+                            - name: "{{ app_name }}-api"
+                              env: "{{ env_name }}"
+                            - name: "{{ app_name }}-worker"
+                        metadata:
+                            full_name: "{{ app_name }} ({{ env_name }})"
+                """
+            ),
+        }
+    )
+
+    result = run_inspect(str(src), format="dot")
+
+    assert "digraph question_dependencies {" in result
+    assert '"app_name" -> "complex_config"' in result
+    assert '"env_name" -> "complex_config"' in result
+    assert 'label="default"' in result
+
+
+def test_inspect_nested_mermaid(tmp_path_factory: pytest.TempPathFactory) -> None:
+    src = tmp_path_factory.mktemp("src")
+    build_file_tree(
+        {
+            (src / "copier.yml"): dedent(
+                """\
+                app_name:
+                    type: str
+                env_name:
+                    type: str
+                complex_config:
+                    type: yaml
+                    default:
+                        services:
+                            - name: "{{ app_name }}-api"
+                              env: "{{ env_name }}"
+                """
+            ),
+        }
+    )
+
+    result = run_inspect(str(src), format="mermaid")
+
+    assert "flowchart TD" in result
+    assert "-. default .->" in result
+    assert "app_name" in result
+    assert "env_name" in result
+    assert "complex_config" in result

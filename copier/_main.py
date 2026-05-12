@@ -52,6 +52,7 @@ from ._tools import (
     cast_to_bool,
     escape_git_path,
     extract_template_vars,
+    extract_vars_from_nested,
     generate_dot,
     generate_mermaid,
     normalize_git_path,
@@ -1918,8 +1919,8 @@ def run_inspect(
                 if deps:
                     when_deps[name] = deps
 
-            if isinstance(default, str):
-                vars_in_default = extract_template_vars(default, jinja_env)
+            if default is not None:
+                vars_in_default = extract_vars_from_nested(default, jinja_env)
                 deps = vars_in_default & all_question_names
                 if deps:
                     default_deps[name] = deps

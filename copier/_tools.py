@@ -309,6 +309,36 @@ def extract_template_vars(template_str: str, jinja_env: SandboxedEnvironment) ->
     return find_undeclared_variables(ast)
 
 
+def extract_vars_from_nested(
+    value: Any, jinja_env: SandboxedEnvironment
+) -> set[str]:
+    """Extract variable names from a potentially nested structure.
+
+    Recursively traverses lists and dicts to find all template strings
+    and extracts variable references from them.
+
+    Args:
+        value: The value to analyze (can be str, list, dict, or other).
+        jinja_env: The Jinja2 environment used for parsing.
+
+    Returns:
+        A set of all variable names found in any template strings within
+        the nested structure.
+    """
+    result: set[str] = set()
+
+    if isinstance(value, str):
+        result.update(extract_template_vars(value, jinja_env))
+    elif isinstance(value, list):
+        for item in value:
+            result.update(extract_vars_from_nested(item, jinja_env))
+    elif isinstance(value, dict):
+        for v in value.values():
+            result.update(extract_vars_from_nested(v, jinja_env))
+
+    return result
+
+
 def generate_dot(
     questions: Mapping[str, Any],
     question_names: Sequence[str],
