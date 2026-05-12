@@ -245,6 +245,9 @@ class OciFetcher(TemplateFetcher):
             else:
                 repository = f"{first_part}/{last_part}"
 
+        if digest is not None:
+            tag = None
+
         return OciImageRef(registry=registry, repository=repository, tag=tag, digest=digest)
 
     def _is_oci_reference(self, url: str) -> bool:

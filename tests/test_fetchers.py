@@ -30,7 +30,7 @@ def sample_zip_archive(tmp_path: Path) -> tuple[Path, str]:
     template_dir.mkdir()
 
     copier_yml = template_dir / "copier.yml"
-    copier_yml.write_text("name:\n  type: str\n  default: test-project\n")
+    copier_yml.write_text("_templates_suffix: .tmpl\nname:\n  type: str\n  default: test-project\n")
 
     hello_tmpl = template_dir / "hello.txt.tmpl"
     hello_tmpl.write_text("Hello, {{ name }}!")
@@ -50,7 +50,7 @@ def sample_tar_archive(tmp_path: Path) -> tuple[Path, str]:
     template_dir.mkdir()
 
     copier_yml = template_dir / "copier.yml"
-    copier_yml.write_text("name:\n  type: str\n  default: test-project\n")
+    copier_yml.write_text("_templates_suffix: .tmpl\nname:\n  type: str\n  default: test-project\n")
 
     hello_tmpl = template_dir / "hello.txt.tmpl"
     hello_tmpl.write_text("Hello, {{ name }}!")
