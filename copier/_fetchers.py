@@ -106,6 +106,8 @@ class HttpFetcher(TemplateFetcher):
     ) -> str:
         if location is None:
             location = mkdtemp(prefix=FETCHER_PREFIX)
+        else:
+            Path(location).mkdir(parents=True, exist_ok=True)
 
         import urllib.request
 
@@ -174,6 +176,10 @@ class OciFetcher(TemplateFetcher):
             return False
         if GitFetcher().can_handle(url):
             return False
+        if Path(url).exists():
+            return False
+        if url.startswith(("/", "./", "../", "~", ".")) or "\\" in url:
+            return False
         return self._is_oci_reference(url)
 
     def fetch(
@@ -185,6 +191,8 @@ class OciFetcher(TemplateFetcher):
     ) -> str:
         if location is None:
             location = mkdtemp(prefix=FETCHER_PREFIX)
+        else:
+            Path(location).mkdir(parents=True, exist_ok=True)
 
         image_ref = self._parse_oci_url(url)
         if ref is not None and image_ref.tag is None and image_ref.digest is None:
@@ -301,7 +309,7 @@ class OciFetcher(TemplateFetcher):
     def _extract_layer(self, layer_data: bytes, dest: Path) -> None:
         try:
             if tarfile.is_tarfile(io.BytesIO(layer_data)):
-                with tarfile.open(fileobj=io.BytesIO(layer_data), "r:*") as tf:
+                with tarfile.open(fileobj=io.BytesIO(layer_data), mode="r:*") as tf:
                     tf.extractall(dest)
         except Exception:
             pass
