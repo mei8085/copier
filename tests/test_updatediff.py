@@ -2695,7 +2695,8 @@ def test_update_conflict_report_no_conflicts(
     run_copy(str(src), dst, defaults=True, overwrite=True)
     with local.cwd(dst):
         git_init("hello project")
-        git("commit", "-am", "initial commit")
+        Path("test.txt").write_text("upstream version 2")
+        git("commit", "-am", "downstream change")
 
     with local.cwd(src):
         Path("test.txt").write_text("upstream version 2")
