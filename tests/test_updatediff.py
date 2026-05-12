@@ -2732,7 +2732,7 @@ def test_update_cli_conflict_report_exit_code(
         git_init("hello template")
         git("tag", "v1")
 
-    CopierApp.run(
+    _, exit_code = CopierApp.run(
         ["copier", "copy", str(src), str(dst), "--defaults", "--overwrite"], exit=False
     )
     with local.cwd(dst):
@@ -2747,7 +2747,7 @@ def test_update_cli_conflict_report_exit_code(
         git("tag", "v2")
 
     with local.cwd(dst):
-        exit_code = CopierApp.run(
+        _, exit_code = CopierApp.run(
             ["copier", "update", "--defaults", "--conflict-report"], exit=False
         )
         assert exit_code == 8
@@ -2760,3 +2760,4 @@ def test_update_cli_conflict_report_exit_code(
         assert report["files_affected"] == 1
         assert len(report["conflicts"]) == 1
         assert report["conflicts"][0]["file"] == "test.txt"
+        assert report["conflicts"][0]["conflict_type"] == "inline"
