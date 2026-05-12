@@ -323,6 +323,141 @@ Supported keys:
     in the render context. See an example using `UNSET` in the section for `default`
     above.
 
+## Visualizing question dependencies
+
+When templates grow complex with many questions that depend on each other through
+`when` conditions and `default` values, it can be difficult to understand the
+dependency graph. Copier provides the `copier inspect` subcommand to help you
+visualize these dependencies.
+
+### Basic usage
+
+To inspect a template and generate a dependency graph:
+
+```console
+copier inspect path/to/template
+```
+
+By default, the output is in [GraphViz DOT](https://graphviz.org/doc/info/lang.html)
+format. You can also choose
+[Mermaid](https://mermaid.js.org/) format using the `--format` flag.
+
+### GraphViz DOT format
+
+```console
+$ copier inspect path/to/template
+digraph question_dependencies {
+    node [shape=box style=rounded]
+    "owner1"
+    "has_2_owners"
+    "owner2" [shape=ellipse, style=filled,rounded, fillcolor=lightgray]
+    "has_2_owners" -> "owner2" [label="when" color=red]
+    "owner1" -> "owner2" [label="default" color=blue]
+}
+```
+
+To render the DOT graph to an image, you can use the `dot` command from GraphViz:
+
+```console
+copier inspect path/to/template | dot -Tpng -o dependencies.png
+```
+
+### Mermaid format
+
+```console
+$ copier inspect path/to/template --format mermaid
+flowchart TD
+    q0[owner1]
+    q1[has_2_owners]
+    q2(owner2)
+    style q2 fill:#d3d3d3,stroke:#333,stroke-width:2px
+    q1 -- when --> q2
+    q0 -. default .-> q2
+```
+
+Mermaid diagrams can be rendered:
+- Online using the [Mermaid Live Editor](https://mermaid.live/)
+- In markdown files on GitHub, GitLab, and other platforms
+- Using the `mermaid-cli` tool: `copier inspect path/to/template --format mermaid | mmdc -o dependencies.png`
+
+### Graph legend
+
+In the generated graphs:
+
+- **Solid arrows (red, labeled "when")**: Indicate a `when` condition dependency
+- **Dashed arrows (blue, labeled "default")**: Indicate a `default` value dependency
+- **Ellipse-shaped nodes**: Questions with a `when` condition
+- **Filled/gray nodes**: Questions with a `default` value that references other questions
+- **Nodes that are both ellipse and filled**: Questions that have both `when` and `default` dependencies
+
+### Python API
+
+You can also use the `inspect` functionality from Python code:
+
+```python
+from copier import run_inspect
+
+# Generate DOT format
+dot_graph = run_inspect("path/to/template", format="dot")
+
+# Generate Mermaid format
+mermaid_graph = run_inspect("path/to/template", format="mermaid")
+```
+
+### Supported dependencies
+
+The `inspect` command analyzes:
+
+1. **`when` conditions**: Jinja templates in `when` fields
+2. **`default` values**: Jinja templates in `default` fields, including:
+   - Simple string defaults: `default: "{{ other_question }}"`
+   - List defaults: `default: ["{{ q1 }}", "{{ q2 }}"]`
+   - Dict/object defaults: `default: {"key": "{{ q1 }}"}`
+   - Nested structures: Any combination of lists and dicts
+   - Dict keys: `default: {"{{ q1 }}": "value"}`
+
+!!! example
+
+    ```yaml title="copier.yml"
+    env_name:
+        type: str
+
+    service_name:
+        type: str
+
+    config:
+        type: yaml
+        default:
+            "{{ env_name }}_settings":
+                enabled: true
+            services:
+                "{{ service_name }}_api":
+                    port: 8080
+    ```
+
+    In this example, `config` depends on both `env_name` (via dict key) and
+    `service_name` (via nested dict key).
+
+!!! example
+
+    ```yaml title="copier.yml"
+    owner1:
+        type: str
+
+    has_2_owners:
+        type: bool
+        default: false
+
+    owner2:
+        type: str
+        default: "{{ owner1 }}"
+        when: "{{ has_2_owners }}"
+    ```
+
+    This template would generate a graph showing:
+    - `has_2_owners` → `owner2` (when dependency)
+    - `owner1` → `owner2` (default dependency)
+
 !!! example
 
     ```yaml title="copier.yml"
