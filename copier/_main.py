@@ -392,19 +392,26 @@ class Worker:
         self._execute_tasks_with_rollback(tasks, track=False)
 
     def _execute_tasks_with_rollback(
-        self, tasks: Sequence[Task], *, track: bool = False
+        self,
+        tasks: Sequence[Task],
+        *,
+        track: bool = False,
+        executed_tasks_list: list[Task] | None = None,
     ) -> list[Task]:
         """Run the given tasks, optionally tracking them for rollback.
 
         Arguments:
             tasks: The list of tasks to run.
             track: If True, track successfully executed tasks with rollback_cmd.
+            executed_tasks_list: Optional list to append executed tasks to.
+                If provided, executed tasks will be appended to this list
+                incrementally as they complete.
 
         Returns:
             List of successfully executed tasks that have rollback commands.
         """
         operation = _operation.get()
-        executed_tasks: list[Task] = []
+        executed_tasks: list[Task] = executed_tasks_list if executed_tasks_list is not None else []
         for i, task in enumerate(tasks):
             extra_context = {f"_{k}": v for k, v in task.extra_vars.items()}
             extra_context["_copier_operation"] = operation
@@ -1438,11 +1445,11 @@ class Worker:
                     old_worker.run_copy()
                 # Run pre-migration tasks
                 with Phase.use(Phase.MIGRATE):
-                    before_migrations = self._execute_tasks_with_rollback(
+                    self._execute_tasks_with_rollback(
                         self.template.migration_tasks("before", self.subproject.template),  # type: ignore[arg-type]
                         track=should_rollback,
+                        executed_tasks_list=executed_migrations,
                     )
-                    executed_migrations.extend(before_migrations)
                 # Create a Git tree object from the current (possibly dirty) index
                 with local.cwd(subproject_top):
                     subproject_head = git("write-tree").strip()
@@ -1632,11 +1639,11 @@ class Worker:
 
             # Run post-migration tasks
             with Phase.use(Phase.MIGRATE):
-                after_migrations = self._execute_tasks_with_rollback(
+                self._execute_tasks_with_rollback(
                     self.template.migration_tasks("after", self.subproject.template),  # type: ignore[arg-type]
                     track=should_rollback,
+                    executed_tasks_list=executed_migrations,
                 )
-                executed_migrations.extend(after_migrations)
         except Exception:
             if should_rollback and executed_migrations:
                 if not self.quiet:
