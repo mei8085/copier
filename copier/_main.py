@@ -51,6 +51,9 @@ from ._tools import (
     Style,
     cast_to_bool,
     escape_git_path,
+    extract_template_vars,
+    generate_dot,
+    generate_mermaid,
     normalize_git_path,
     printf,
     scantree,
@@ -1865,6 +1868,102 @@ def get_update_data(
         latest_version = str(worker.template.version)
 
     return (update_available, current_version, latest_version)
+
+
+def run_inspect(
+    src_path: str,
+    *,
+    vcs_ref: str | VcsRef | None = None,
+    use_prereleases: bool = False,
+    format: Literal["dot", "mermaid"] = "dot",
+) -> str:
+    """Inspect a template and generate a dependency graph of questions.
+
+    Analyzes the `when` and `default` fields of questions and generates a graph
+    showing the dependencies between questions.
+
+    Args:
+        src_path:
+            String that can be resolved to a template path, be it local or remote.
+        vcs_ref:
+            Specify the VCS tag/commit to use in the template.
+        use_prereleases:
+            Consider prereleases when detecting the *latest* one?
+            Useless if specifying a [vcs_ref][].
+        format:
+            Output format: "dot" (GraphViz) or "mermaid".
+
+    Returns:
+        A string containing the graph in the specified format.
+    """
+    template = Template(url=src_path, ref=vcs_ref, use_prereleases=use_prereleases)
+    try:
+        questions_data = template.questions_data
+        question_names = list(questions_data.keys())
+
+        jinja_env = _create_jinja_env_for_template(template)
+
+        all_question_names = set(question_names)
+
+        when_deps: dict[str, set[str]] = {}
+        default_deps: dict[str, set[str]] = {}
+
+        for name, question in questions_data.items():
+            when = question.get("when", True)
+            default = question.get("default")
+
+            if isinstance(when, str):
+                vars_in_when = extract_template_vars(when, jinja_env)
+                deps = vars_in_when & all_question_names
+                if deps:
+                    when_deps[name] = deps
+
+            if isinstance(default, str):
+                vars_in_default = extract_template_vars(default, jinja_env)
+                deps = vars_in_default & all_question_names
+                if deps:
+                    default_deps[name] = deps
+
+        if format == "dot":
+            return generate_dot(
+                questions_data, question_names, when_deps, default_deps
+            )
+        elif format == "mermaid":
+            return generate_mermaid(
+                questions_data, question_names, when_deps, default_deps
+            )
+        else:
+            raise ValueError(f"Unsupported format: {format}")
+    finally:
+        template._cleanup()
+
+
+def _create_jinja_env_for_template(template: Template) -> SandboxedEnvironment:
+    """Create a Jinja2 environment for inspecting a template.
+
+    Args:
+        template: The template to create the environment for.
+
+    Returns:
+        A SandboxedEnvironment configured for the template.
+    """
+    from jinja2.loaders import FileSystemLoader
+
+    paths = [str(template.local_abspath)]
+    loader = FileSystemLoader(paths)
+    default_extensions = [
+        "jinja2_ansible_filters.AnsibleCoreFiltersExtension",
+        YieldExtension,
+    ]
+    extensions = default_extensions + list(template.jinja_extensions)
+    envops = dict(template.envops)
+
+    if undefined_class := envops.get("undefined"):
+        if undefined_class in {"jinja2.Undefined", "jinja2.StrictUndefined"}:
+            envops["undefined"] = import_string(undefined_class)
+
+    env = SandboxedEnvironment(loader=loader, extensions=extensions, **envops)
+    return env
 
 
 def _remove_old_files(prefix: Path, cmp: dircmp[str], rm_common: bool = False) -> None:

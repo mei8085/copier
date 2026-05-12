@@ -67,7 +67,7 @@ from textwrap import dedent
 import yaml
 from plumbum import cli, colors
 
-from ._main import get_update_data, run_copy, run_recopy, run_update
+from ._main import get_update_data, run_copy, run_inspect, run_recopy, run_update
 from ._tools import copier_version, try_enum
 from ._types import AnyByStrDict, VcsRef
 from .errors import UnsafeTemplateError, UserMessageError
@@ -532,6 +532,71 @@ class CopierCheckUpdateSubApp(cli.Application):  # type: ignore[misc]
                 else:
                     # TODO Unify printing tools
                     print("Project is up-to-date!")
+            return 0
+
+        return _handle_exceptions(inner)
+
+
+@CopierApp.subcommand("inspect")
+class CopierInspectSubApp(cli.Application):  # type: ignore[misc]
+    """The `copier inspect` subcommand.
+
+    Use this subcommand to inspect a template and visualize the dependencies
+    between questions through `when` and `default` fields.
+    """
+
+    DESCRIPTION = "Inspect a template and visualize question dependencies"
+    DESCRIPTION_MORE = dedent(
+        """\
+        Analyzes the questions defined in the template and generates a graph
+        showing how they depend on each other through `when` and `default` fields.
+
+        Output can be in GraphViz DOT format or Mermaid format, which can be
+        rendered using various tools for offline inspection.
+        """
+    )
+
+    vcs_ref = cli.SwitchAttr(
+        ["-r", "--vcs-ref"],
+        str,
+        help=(
+            "Git reference to checkout in `template_src`. "
+            "If you do not specify it, it will try to checkout the latest git tag, "
+            "as sorted using the PEP 440 algorithm. If you want to checkout always "
+            "the latest version, use `--vcs-ref=HEAD`. "
+            "Use the special value `:current:` to refer to the current reference "
+            "of the template if it already exists."
+        ),
+    )
+    prereleases = cli.Flag(
+        ["-g", "--prereleases"],
+        help="Use prereleases to compare template VCS tags.",
+    )
+    output_format = cli.SwitchAttr(
+        ["--format", "-f"],
+        cli.Set("dot", "mermaid"),
+        default="dot",
+        help="Output format: 'dot' (GraphViz, the default) or 'mermaid'.",
+    )
+
+    def main(self, template_src: str) -> int:
+        """Call run_inspect and output the result.
+
+        Parameters:
+            template_src:
+                Indicate where to get the template from.
+
+                This can be a git URL or a local path.
+        """
+
+        def inner() -> int:
+            result = run_inspect(
+                src_path=template_src,
+                vcs_ref=try_enum(VcsRef, self.vcs_ref),
+                use_prereleases=self.prereleases,
+                format=self.output_format,
+            )
+            print(result)
             return 0
 
         return _handle_exceptions(inner)

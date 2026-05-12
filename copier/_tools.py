@@ -18,6 +18,7 @@ from types import TracebackType
 from typing import Any, Literal, TextIO, TypeVar, cast
 
 import colorama
+from jinja2.sandbox import SandboxedEnvironment
 from packaging.version import Version
 from pathspec.patterns.gitwildmatch import GitWildMatchPattern
 from pydantic import StrictBool
@@ -283,3 +284,135 @@ def try_enum(enum_type: type[_E], value: _T) -> _E | _T:
         return enum_type(value)
     except ValueError:
         return value
+
+
+def extract_template_vars(template_str: str, jinja_env: SandboxedEnvironment) -> set[str]:
+    """Extract variable names from a Jinja2 template string.
+
+    Args:
+        template_str: The template string to analyze.
+        jinja_env: The Jinja2 environment used for parsing.
+
+    Returns:
+        A set of variable names referenced in the template.
+    """
+    if not isinstance(template_str, str):
+        return set()
+
+    from jinja2.meta import find_undeclared_variables
+
+    try:
+        ast = jinja_env.parse(template_str)
+    except Exception:
+        return set()
+
+    return find_undeclared_variables(ast)
+
+
+def generate_dot(
+    questions: Mapping[str, Any],
+    question_names: Sequence[str],
+    when_deps: Mapping[str, set[str]],
+    default_deps: Mapping[str, set[str]],
+) -> str:
+    """Generate DOT format graph of question dependencies.
+
+    Args:
+        questions: Dictionary of questions data.
+        question_names: Ordered list of question names.
+        when_deps: Mapping from question name to set of questions it depends on via `when`.
+        default_deps: Mapping from question name to set of questions it depends on via `default`.
+
+    Returns:
+        A DOT format string.
+    """
+    lines = ["digraph question_dependencies {"]
+    lines.append("    node [shape=box style=rounded]")
+
+    for name in question_names:
+        if name in questions:
+            label = name
+            has_when = name in when_deps and bool(when_deps[name])
+            has_default = name in default_deps and bool(default_deps[name])
+            if has_when or has_default:
+                props = []
+                if has_when:
+                    props.append("shape=ellipse")
+                if has_default:
+                    props.append("style=filled,rounded")
+                    props.append("fillcolor=lightgray")
+                lines.append(f'    "{name}" [{", ".join(props)}]')
+            else:
+                lines.append(f'    "{name}"')
+
+    for name in question_names:
+        if name in when_deps:
+            for dep in sorted(when_deps[name]):
+                if dep in question_names:
+                    lines.append(f'    "{dep}" -> "{name}" [label="when" color=red]')
+
+    for name in question_names:
+        if name in default_deps:
+            for dep in sorted(default_deps[name]):
+                if dep in question_names:
+                    lines.append(f'    "{dep}" -> "{name}" [label="default" color=blue]')
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def generate_mermaid(
+    questions: Mapping[str, Any],
+    question_names: Sequence[str],
+    when_deps: Mapping[str, set[str]],
+    default_deps: Mapping[str, set[str]],
+) -> str:
+    """Generate Mermaid format graph of question dependencies.
+
+    Args:
+        questions: Dictionary of questions data.
+        question_names: Ordered list of question names.
+        when_deps: Mapping from question name to set of questions it depends on via `when`.
+        default_deps: Mapping from question name to set of questions it depends on via `default`.
+
+    Returns:
+        A Mermaid format string.
+    """
+    lines = ["flowchart TD"]
+
+    node_ids = {}
+    for i, name in enumerate(question_names):
+        node_ids[name] = f"q{i}"
+
+    for name in question_names:
+        node_id = node_ids[name]
+        has_when = name in when_deps and bool(when_deps[name])
+        has_default = name in default_deps and bool(default_deps[name])
+        if has_when and has_default:
+            lines.append(f"    {node_id}({name})")
+            lines.append(f"    style {node_id} fill:#d3d3d3,stroke:#333,stroke-width:2px")
+        elif has_when:
+            lines.append(f"    {node_id}({name})")
+        elif has_default:
+            lines.append(f"    {node_id}[{name}]")
+            lines.append(f"    style {node_id} fill:#d3d3d3,stroke:#333,stroke-width:2px")
+        else:
+            lines.append(f"    {node_id}[{name}]")
+
+    for name in question_names:
+        if name in when_deps:
+            for dep in sorted(when_deps[name]):
+                if dep in node_ids:
+                    lines.append(
+                        f"    {node_ids[dep]} -- when --> {node_ids[name]}"
+                    )
+
+    for name in question_names:
+        if name in default_deps:
+            for dep in sorted(default_deps[name]):
+                if dep in node_ids:
+                    lines.append(
+                        f"    {node_ids[dep]} -. default .-> {node_ids[name]}"
+                    )
+
+    return "\n".join(lines)

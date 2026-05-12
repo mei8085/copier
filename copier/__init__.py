@@ -25,6 +25,7 @@ def __getattr__(name: str) -> Any:
         "run_copy",
         "run_recopy",
         "run_update",
+        "run_inspect",
     }:
         deprecate_member_as_internal(name, __name__)
     return getattr(_main, name)
@@ -34,7 +35,8 @@ __all__ = [
     "load_settings",
     "run_copy",  # noqa: F405
     "run_recopy",  # noqa: F405
-    "run_update",  # noqa: F405,
+    "run_update",  # noqa: F405
+    "run_inspect",  # noqa: F405
     "Phase",
     "Settings",
     "VcsRef",
