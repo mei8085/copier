@@ -180,12 +180,17 @@ class Task:
         working_directory:
             The directory from inside where to execute the task.
             If `None`, the project directory will be used.
+        
+        dependencies:
+            List of task indices that this task depends on.
+            Tasks without dependencies can run in parallel.
     """
 
     cmd: str | Sequence[str]
     extra_vars: dict[str, Any] = field(default_factory=dict)
     condition: str | bool = True
     working_directory: Path = Path()
+    dependencies: Sequence[int] = field(default_factory=tuple)
 
 
 @dataclass
@@ -530,6 +535,7 @@ class Template:
                         extra_vars=extra_vars,
                         condition=task.get("when", "true"),
                         working_directory=Path(task.get("working_directory", ".")),
+                        dependencies=tuple(task.get("dependencies", [])),
                     )
                 )
             else:
