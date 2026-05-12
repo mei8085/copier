@@ -24,16 +24,10 @@ from plumbum.commands.processes import ProcessExecutionError
 from plumbum.machines import local
 from pydantic.dataclasses import dataclass
 
+from ._fetchers import FETCHER_PREFIX, get_fetcher
 from ._tools import copier_version, handle_remove_readonly
 from ._types import AnyByStrDict, VCSTypes
-from ._vcs import (
-    CLONE_PREFIX,
-    clone,
-    get_git,
-    get_latest_tag,
-    get_repo,
-    is_git_available,
-)
+from ._vcs import get_git
 from .errors import (
     InvalidConfigFileError,
     MultipleConfigFilesError,
@@ -561,17 +555,19 @@ class Template:
     def local_abspath(self) -> Path:
         """Get the absolute path to the template on disk.
 
-        This may clone it if `url` points to a VCS-tracked template.
+        This may fetch it if `url` points to a remote template (git, http, oci).
         Dirty changes for local VCS-tracked templates will be copied.
         """
         result = Path(self.url)
-        if self.vcs == "git":
-            self._temp_clone_path = Path(mkdtemp(prefix=CLONE_PREFIX))
+        fetcher = get_fetcher(self.url)
+        if fetcher:
+            self._temp_clone_path = Path(mkdtemp(prefix=FETCHER_PREFIX))
             result = Path(
-                clone(
-                    self.url_expanded,
-                    self.ref or get_latest_tag(self.url_expanded, self.use_prereleases),
+                fetcher.fetch(
+                    self.url,
+                    ref=self.ref,
                     location=str(self._temp_clone_path),
+                    use_prereleases=self.use_prereleases,
                 )
             )
         if not result.is_dir():
@@ -625,10 +621,10 @@ class Template:
         """Get usable URL.
 
         `url` can be specified in shortcut
-        format, which wouldn't be understood by the underlying VCS system. This
+        format, which wouldn't be understood by the underlying system. This
         property returns the expanded version, which should work properly.
         """
-        return get_repo(self.url) or self.url
+        return self.url
 
     @cached_property
     def version(self) -> Version | None:
@@ -660,7 +656,8 @@ class Template:
 
     @cached_property
     def vcs(self) -> VCSTypes | None:
-        """Get VCS system used by the template, if any."""
-        if is_git_available() and get_repo(self.url):
-            return "git"
+        """Get VCS/fetch system used by the template, if any."""
+        fetcher = get_fetcher(self.url)
+        if fetcher:
+            return fetcher.protocol
         return None

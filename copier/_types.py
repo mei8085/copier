@@ -33,7 +33,7 @@ OptStrOrPath = StrOrPath | None
 # miscellaneous
 T = TypeVar("T")
 JSONSerializable = (dict, list, str, int, float, bool, type(None))
-VCSTypes = Literal["git"]
+VCSTypes = Literal["git", "http", "https", "oci"]
 Env = Mapping[str, str]
 MissingType = NewType("MissingType", object)
 MISSING = MissingType(object())
