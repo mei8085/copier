@@ -180,3 +180,148 @@ def test_copier_phase_variable(tmp_path_factory: pytest.TempPathFactory) -> None
     )
     copier.run_copy(str(src), dst, unsafe=True)
     assert (dst / "tasks").exists()
+
+
+def test_tasks_with_dependencies(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that tasks with dependencies execute in the correct order."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+    build_file_tree(
+        {
+            (src / "copier.yml"): (
+                """\
+                _tasks:
+                    - command: ["{{ _copier_python }}", "-c", "import os; os.mkdir('step1')"]
+                      dependencies: []
+                    - command: ["{{ _copier_python }}", "-c", "import os; os.mkdir('step2')"]
+                      dependencies: [0]
+                    - command: ["{{ _copier_python }}", "-c", "import os; os.mkdir('step3')"]
+                      dependencies: [1]
+                """
+            )
+        }
+    )
+    copier.run_copy(str(src), dst, unsafe=True)
+    assert (dst / "step1").is_dir()
+    assert (dst / "step2").is_dir()
+    assert (dst / "step3").is_dir()
+
+
+def test_tasks_with_parallel_execution(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that tasks without dependencies can run in parallel.
+    
+    This test uses task 3 depending on task 0 to trigger parallel execution mode,
+    while tasks 1 and 2 have no dependencies and can run in parallel with task 0.
+    """
+    import time
+
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+    build_file_tree(
+        {
+            (src / "copier.yml"): (
+                """\
+                _tasks:
+                    - command: ["{{ _copier_python }}", "-c", "import time; time.sleep(0.2); open('task1', 'w').close()"]
+                      dependencies: []
+                    - command: ["{{ _copier_python }}", "-c", "import time; time.sleep(0.2); open('task2', 'w').close()"]
+                      dependencies: []
+                    - command: ["{{ _copier_python }}", "-c", "import time; time.sleep(0.2); open('task3', 'w').close()"]
+                      dependencies: []
+                    - command: ["{{ _copier_python }}", "-c", "open('task4', 'w').close()"]
+                      dependencies: [0]
+                """
+            )
+        }
+    )
+
+    start_time = time.time()
+    copier.run_copy(str(src), dst, unsafe=True, quiet=True)
+    elapsed_time = time.time() - start_time
+
+    assert (dst / "task1").is_file()
+    assert (dst / "task2").is_file()
+    assert (dst / "task3").is_file()
+    assert (dst / "task4").is_file()
+    # Tasks 0, 1, 2 should run in parallel (0.2s), then task 3 runs (almost instant)
+    # Total should be ~0.2-0.3s, definitely less than 0.8s (sequential would be 0.2*4=0.8s)
+    assert elapsed_time < 0.6  # Should take less than 0.6 seconds if running in parallel
+
+
+def test_tasks_with_mixed_dependencies(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that tasks with mixed dependencies execute correctly."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+    build_file_tree(
+        {
+            (src / "copier.yml"): (
+                """\
+                _tasks:
+                    - command: ["{{ _copier_python }}", "-c", "open('a', 'w').close()"]
+                      dependencies: []
+                    - command: ["{{ _copier_python }}", "-c", "open('b', 'w').close()"]
+                      dependencies: []
+                    - command: ["{{ _copier_python }}", "-c", "open('c', 'w').close()"]
+                      dependencies: [0, 1]
+                    - command: ["{{ _copier_python }}", "-c", "open('d', 'w').close()"]
+                      dependencies: [2]
+                """
+            )
+        }
+    )
+    copier.run_copy(str(src), dst, unsafe=True)
+    assert (dst / "a").is_file()
+    assert (dst / "b").is_file()
+    assert (dst / "c").is_file()
+    assert (dst / "d").is_file()
+
+
+def test_tasks_with_conditional_dependencies(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that conditional tasks work correctly with dependencies."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+    build_file_tree(
+        {
+            (src / "copier.yml"): (
+                """\
+                _tasks:
+                    - command: ["{{ _copier_python }}", "-c", "open('always', 'w').close()"]
+                      dependencies: []
+                    - command: ["{{ _copier_python }}", "-c", "open('never', 'w').close()"]
+                      when: false
+                      dependencies: [0]
+                    - command: ["{{ _copier_python }}", "-c", "open('after_skip', 'w').close()"]
+                      dependencies: [0]
+                """
+            )
+        }
+    )
+    copier.run_copy(str(src), dst, unsafe=True)
+    assert (dst / "always").is_file()
+    assert not (dst / "never").exists()
+    assert (dst / "after_skip").is_file()
+
+
+def test_tasks_backwards_compatibility(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that tasks without dependencies field still work (backwards compatibility)."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+    build_file_tree(
+        {
+            (src / "copier.yml"): (
+                """\
+                _tasks:
+                    - ["{{ _copier_python }}", "-c", "open('old_style1', 'w').close()"]
+                    - ["{{ _copier_python }}", "-c", "open('old_style2', 'w').close()"]
+                """
+            )
+        }
+    )
+    copier.run_copy(str(src), dst, unsafe=True)
+    assert (dst / "old_style1").is_file()
+    assert (dst / "old_style2").is_file()

@@ -380,6 +380,44 @@ class Worker:
         )
         return answers
 
+    def _execute_single_task(self, task_index: int, task: Task, total_tasks: int, operation: Any) -> None:
+        """Execute a single task."""
+        extra_context = {f"_{k}": v for k, v in task.extra_vars.items()}
+        extra_context["_copier_operation"] = operation
+
+        if not cast_to_bool(self._render_value(task.condition, extra_context)):
+            return
+
+        task_cmd = task.cmd
+        if isinstance(task_cmd, str):
+            task_cmd = self._render_string(task_cmd, extra_context)
+            use_shell = True
+        else:
+            task_cmd = [
+                self._render_string(str(part), extra_context) for part in task_cmd
+            ]
+            use_shell = False
+
+        if not self.quiet:
+            print(
+                colors.info
+                | f" > Running task {task_index + 1} of {total_tasks}: {task_cmd}",
+                file=sys.stderr,
+            )
+        if self.pretend:
+            return
+
+        working_directory = (
+            self.subproject.local_abspath
+            / Path(self._render_string(str(task.working_directory), extra_context))
+        ).absolute()
+
+        extra_env = {k[1:].upper(): str(v) for k, v in extra_context.items()}
+        with local.cwd(working_directory), local.env(**extra_env):
+            process = subprocess.run(task_cmd, shell=use_shell, env=local.env)
+            if process.returncode:
+                raise TaskError.from_process(process)
+
     def _execute_tasks(self, tasks: Sequence[Task]) -> None:
         """Run the given tasks.
 
@@ -391,85 +429,28 @@ class Worker:
 
         operation = _operation.get()
         total_tasks = len(tasks)
-        task_outputs = [None] * total_tasks
+        
+        # Check if any tasks have non-empty dependencies
+        # If all tasks have empty dependencies, run sequentially for backwards compatibility
+        has_non_empty_dependencies = any(
+            len(task.dependencies) > 0 for task in tasks
+        )
+        
+        if not has_non_empty_dependencies:
+            # All tasks have empty dependencies, run sequentially for backwards compatibility
+            for i, task in enumerate(tasks):
+                self._execute_single_task(i, task, total_tasks, operation)
+            return
+        
+        # Build dependency graph
         task_errors = [None] * total_tasks
         task_completed = [False] * total_tasks
-        output_lock = threading.Lock()
-        
-        def prepare_and_run_task(task_index: int) -> None:
-            """Prepare and run a single task."""
-            task = tasks[task_index]
-            extra_context = {f"_{k}": v for k, v in task.extra_vars.items()}
-            extra_context["_copier_operation"] = operation
-
-            if not cast_to_bool(self._render_value(task.condition, extra_context)):
-                with output_lock:
-                    task_completed[task_index] = True
-                    task_outputs[task_index] = (task_index, f"Skipping task {task_index + 1}: condition not met", None)
-                return
-
-            task_cmd = task.cmd
-            if isinstance(task_cmd, str):
-                task_cmd = self._render_string(task_cmd, extra_context)
-                use_shell = True
-            else:
-                task_cmd = [
-                    self._render_string(str(part), extra_context) for part in task_cmd
-                ]
-                use_shell = False
-
-            output_msg = None
-            if not self.quiet:
-                output_msg = f" > Running task {task_index + 1} of {total_tasks}: {task_cmd}"
-                with output_lock:
-                    print(colors.info | output_msg, file=sys.stderr)
-            
-            if self.pretend:
-                with output_lock:
-                    task_completed[task_index] = True
-                    task_outputs[task_index] = (task_index, output_msg, None)
-                return
-
-            working_directory = (
-                self.subproject.local_abspath
-                / Path(self._render_string(str(task.working_directory), extra_context))
-            ).absolute()
-
-            extra_env = {k[1:].upper(): str(v) for k, v in extra_context.items()}
-            
-            try:
-                with local.cwd(working_directory), local.env(**extra_env):
-                    process = subprocess.run(task_cmd, shell=use_shell, env=local.env, capture_output=True, text=True)
-                    
-                    stdout = process.stdout
-                    stderr = process.stderr
-                    
-                    if stdout and not self.quiet:
-                        with output_lock:
-                            print(stdout, end='', file=sys.stdout)
-                    
-                    if stderr and not self.quiet:
-                        with output_lock:
-                            print(stderr, end='', file=sys.stderr)
-                    
-                    if process.returncode:
-                        raise TaskError.from_process(process)
-                
-                with output_lock:
-                    task_completed[task_index] = True
-                    task_outputs[task_index] = (task_index, output_msg, None)
-            except Exception as e:
-                with output_lock:
-                    task_completed[task_index] = True
-                    task_errors[task_index] = e
-                    task_outputs[task_index] = (task_index, output_msg, e)
         
         def get_ready_tasks() -> list[int]:
             """Get indices of tasks that are ready to run."""
             ready = []
             for i in range(total_tasks):
                 if not task_completed[i] and task_errors[i] is None:
-                    # Check if all dependencies are completed
                     deps = tasks[i].dependencies
                     if all(task_completed[d] and task_errors[d] is None for d in deps):
                         ready.append(i)
@@ -499,7 +480,13 @@ class Worker:
                 running_task_indices = set(futures.values())
                 for task_index in ready_tasks:
                     if task_index not in running_task_indices:
-                        future = executor.submit(prepare_and_run_task, task_index)
+                        future = executor.submit(
+                            self._execute_single_task, 
+                            task_index, 
+                            tasks[task_index], 
+                            total_tasks, 
+                            operation
+                        )
                         futures[future] = task_index
                 
                 # Wait for at least one task to complete
@@ -507,9 +494,16 @@ class Worker:
                     done, _ = concurrent.futures.wait(
                         futures, return_when=concurrent.futures.FIRST_COMPLETED)
                     
-                    # Remove completed futures
+                    # Process completed futures
                     for future in done:
-                        del futures[future]
+                        task_index = futures[future]
+                        try:
+                            future.result()
+                        except Exception as e:
+                            task_errors[task_index] = e
+                        finally:
+                            task_completed[task_index] = True
+                            del futures[future]
         
         # Check for any remaining errors
         for error in task_errors:
