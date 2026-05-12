@@ -86,7 +86,7 @@ def _conflict_to_dict(conflict: Conflict) -> dict[str, Any]:
         "file": conflict.file,
         "start_line": conflict.start_line,
         "end_line": conflict.end_line,
-        "conflict_type": str(conflict.conflict_type),
+        "conflict_type": conflict.conflict_type.value,
         "context": conflict.context,
     }
 
