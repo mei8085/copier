@@ -352,3 +352,85 @@ def test_inspect_nested_mermaid(tmp_path_factory: pytest.TempPathFactory) -> Non
     assert "app_name" in result
     assert "env_name" in result
     assert "complex_config" in result
+
+
+def test_inspect_dict_key_template_dependency(tmp_path_factory: pytest.TempPathFactory) -> None:
+    src = tmp_path_factory.mktemp("src")
+    build_file_tree(
+        {
+            (src / "copier.yml"): dedent(
+                """\
+                env_name:
+                    type: str
+                config:
+                    type: yaml
+                    default:
+                        "{{ env_name }}_settings":
+                            enabled: true
+                """
+            ),
+        }
+    )
+
+    result = run_inspect(str(src), format="dot")
+
+    assert "digraph question_dependencies {" in result
+    assert '"env_name" -> "config"' in result
+    assert 'label="default"' in result
+
+
+def test_inspect_dict_key_value_template_mixed(tmp_path_factory: pytest.TempPathFactory) -> None:
+    src = tmp_path_factory.mktemp("src")
+    build_file_tree(
+        {
+            (src / "copier.yml"): dedent(
+                """\
+                env_name:
+                    type: str
+                service_name:
+                    type: str
+                config:
+                    type: yaml
+                    default:
+                        "{{ env_name }}_settings":
+                            enabled: true
+                        services:
+                            "{{ service_name }}_api":
+                                port: 8080
+                """
+            ),
+        }
+    )
+
+    result = run_inspect(str(src), format="dot")
+
+    assert "digraph question_dependencies {" in result
+    assert '"env_name" -> "config"' in result
+    assert '"service_name" -> "config"' in result
+    assert 'label="default"' in result
+
+
+def test_inspect_dict_key_mermaid(tmp_path_factory: pytest.TempPathFactory) -> None:
+    src = tmp_path_factory.mktemp("src")
+    build_file_tree(
+        {
+            (src / "copier.yml"): dedent(
+                """\
+                env_name:
+                    type: str
+                config:
+                    type: yaml
+                    default:
+                        "{{ env_name }}_settings":
+                            enabled: true
+                """
+            ),
+        }
+    )
+
+    result = run_inspect(str(src), format="mermaid")
+
+    assert "flowchart TD" in result
+    assert "-. default .->" in result
+    assert "env_name" in result
+    assert "config" in result

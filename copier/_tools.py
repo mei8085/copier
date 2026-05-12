@@ -315,7 +315,8 @@ def extract_vars_from_nested(
     """Extract variable names from a potentially nested structure.
 
     Recursively traverses lists and dicts to find all template strings
-    and extracts variable references from them.
+    and extracts variable references from them. For dicts, both keys
+    and values are analyzed.
 
     Args:
         value: The value to analyze (can be str, list, dict, or other).
@@ -333,7 +334,8 @@ def extract_vars_from_nested(
         for item in value:
             result.update(extract_vars_from_nested(item, jinja_env))
     elif isinstance(value, dict):
-        for v in value.values():
+        for k, v in value.items():
+            result.update(extract_vars_from_nested(k, jinja_env))
             result.update(extract_vars_from_nested(v, jinja_env))
 
     return result
