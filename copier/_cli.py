@@ -401,6 +401,14 @@ class CopierUpdateSubApp(_Subcommand):
         default=False,
         help="Skip questions that have already been answered",
     )
+    rollback_on_failure = cli.Flag(
+        ["--rollback-on-failure"],
+        default=False,
+        help=(
+            "If migration fails during update, execute rollback hooks "
+            "for all successfully completed migrations in reverse order."
+        ),
+    )
 
     def main(self, destination_path: cli.ExistingDirectory = ".") -> int:
         """Call [run_update][copier.run_update].
@@ -432,6 +440,7 @@ class CopierUpdateSubApp(_Subcommand):
                 unsafe=self.unsafe,
                 skip_answered=self.skip_answered,
                 skip_tasks=self.skip_tasks,
+                rollback_on_failure=self.rollback_on_failure,
             )
 
         return _handle_exceptions(inner)

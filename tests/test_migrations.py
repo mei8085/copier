@@ -8,7 +8,7 @@ from plumbum import local
 
 from copier import run_copy, run_update
 from copier._user_data import load_answersfile_data
-from copier.errors import UnsafeTemplateError, UserMessageError
+from copier.errors import TaskError, UnsafeTemplateError, UserMessageError
 
 from .helpers import (
     BRACKET_ENVOPS,
@@ -606,3 +606,284 @@ def test_copier_phase_variable(tmp_path_factory: pytest.TempPathFactory) -> None
         run_update(defaults=True, overwrite=True, unsafe=True)
 
     assert (dst / "migrate").is_file()
+
+
+def test_rollback_hook_on_failure(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Test that rollback hooks are executed when migration fails with rollback_on_failure enabled."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    with local.cwd(src):
+        build_file_tree(
+            {
+                **COPIER_ANSWERS_FILE,
+                "copier.yml": (
+                    """\
+                    _migrations:
+                        - command: touch step1
+                          rollback: rm step1
+                        - command: touch step2
+                          rollback: rm step2
+                        - command: exit 1
+                    """
+                ),
+            }
+        )
+        git_save(tag="v1")
+    with local.cwd(dst):
+        run_copy(src_path=str(src))
+        git_save()
+
+    with local.cwd(src):
+        git("tag", "v2")
+    with local.cwd(dst):
+        with pytest.raises(TaskError):
+            run_update(
+                defaults=True,
+                overwrite=True,
+                unsafe=True,
+                rollback_on_failure=True,
+            )
+
+    assert not (dst / "step1").exists()
+    assert not (dst / "step2").exists()
+
+
+def test_rollback_hook_not_executed_without_flag(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Test that rollback hooks are not executed when rollback_on_failure is disabled."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    with local.cwd(src):
+        build_file_tree(
+            {
+                **COPIER_ANSWERS_FILE,
+                "copier.yml": (
+                    """\
+                    _migrations:
+                        - command: touch step1
+                          rollback: rm step1
+                        - command: exit 1
+                    """
+                ),
+            }
+        )
+        git_save(tag="v1")
+    with local.cwd(dst):
+        run_copy(src_path=str(src))
+        git_save()
+
+    with local.cwd(src):
+        git("tag", "v2")
+    with local.cwd(dst):
+        with pytest.raises(TaskError):
+            run_update(
+                defaults=True,
+                overwrite=True,
+                unsafe=True,
+                rollback_on_failure=False,
+            )
+
+    assert (dst / "step1").exists()
+
+
+def test_rollback_hook_reverse_order(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Test that rollback hooks are executed in reverse order."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    with local.cwd(src):
+        build_file_tree(
+            {
+                **COPIER_ANSWERS_FILE,
+                "copier.yml": (
+                    """\
+                    _migrations:
+                        - command: touch step1
+                          rollback: rm step1
+                        - command: touch step2
+                          rollback: rm step2
+                        - command: touch step3
+                          rollback: rm step3
+                        - command: exit 1
+                    """
+                ),
+            }
+        )
+        git_save(tag="v1")
+    with local.cwd(dst):
+        run_copy(src_path=str(src))
+        git_save()
+
+    with local.cwd(src):
+        git("tag", "v2")
+    with local.cwd(dst):
+        with pytest.raises(TaskError):
+            run_update(
+                defaults=True,
+                overwrite=True,
+                unsafe=True,
+                rollback_on_failure=True,
+            )
+
+    assert not (dst / "step1").exists()
+    assert not (dst / "step2").exists()
+    assert not (dst / "step3").exists()
+
+
+def test_rollback_hook_with_working_directory(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that rollback hooks respect working_directory."""
+    src, dst, workdir = map(tmp_path_factory.mktemp, ("src", "dst", "workdir"))
+
+    with local.cwd(src):
+        build_file_tree(
+            {
+                **COPIER_ANSWERS_FILE,
+                "copier.yml": (
+                    f"""\
+                    _migrations:
+                        - command: touch step1
+                          rollback: rm step1
+                          working_directory: {workdir}
+                        - command: exit 1
+                    """
+                ),
+            }
+        )
+        git_save(tag="v1")
+    with local.cwd(dst):
+        run_copy(src_path=str(src))
+        git_save()
+
+    with local.cwd(src):
+        git("tag", "v2")
+    with local.cwd(dst):
+        with pytest.raises(TaskError):
+            run_update(
+                defaults=True,
+                overwrite=True,
+                unsafe=True,
+                rollback_on_failure=True,
+            )
+
+    assert not (workdir / "step1").exists()
+
+
+def test_rollback_hook_with_stage(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Test that rollback hooks work with both before and after stages."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    with local.cwd(src):
+        build_file_tree(
+            {
+                **COPIER_ANSWERS_FILE,
+                "copier.yml": (
+                    """\
+                    _migrations:
+                        - command: touch before_step
+                          rollback: rm before_step
+                          when: "{{ _stage == 'before' }}"
+                        - command: touch after_step
+                          rollback: rm after_step
+                          when: "{{ _stage == 'after' }}"
+                        - command: exit 1
+                          when: "{{ _stage == 'after' }}"
+                    """
+                ),
+            }
+        )
+        git_save(tag="v1")
+    with local.cwd(dst):
+        run_copy(src_path=str(src))
+        git_save()
+
+    with local.cwd(src):
+        git("tag", "v2")
+    with local.cwd(dst):
+        with pytest.raises(TaskError):
+            run_update(
+                defaults=True,
+                overwrite=True,
+                unsafe=True,
+                rollback_on_failure=True,
+            )
+
+    assert not (dst / "before_step").exists()
+    assert not (dst / "after_step").exists()
+
+
+def test_migration_without_rollback_skipped_on_failure(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that migrations without rollback hooks don't cause issues."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    with local.cwd(src):
+        build_file_tree(
+            {
+                **COPIER_ANSWERS_FILE,
+                "copier.yml": (
+                    """\
+                    _migrations:
+                        - command: touch no_rollback
+                        - command: touch with_rollback
+                          rollback: rm with_rollback
+                        - command: exit 1
+                    """
+                ),
+            }
+        )
+        git_save(tag="v1")
+    with local.cwd(dst):
+        run_copy(src_path=str(src))
+        git_save()
+
+    with local.cwd(src):
+        git("tag", "v2")
+    with local.cwd(dst):
+        with pytest.raises(TaskError):
+            run_update(
+                defaults=True,
+                overwrite=True,
+                unsafe=True,
+                rollback_on_failure=True,
+            )
+
+    assert (dst / "no_rollback").exists()
+    assert not (dst / "with_rollback").exists()
+
+
+def test_rollback_hook_successful_update(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Test that rollback hooks are not executed when update succeeds."""
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+
+    with local.cwd(src):
+        build_file_tree(
+            {
+                **COPIER_ANSWERS_FILE,
+                "copier.yml": (
+                    """\
+                    _migrations:
+                        - command: touch step1
+                          rollback: rm step1
+                    """
+                ),
+            }
+        )
+        git_save(tag="v1")
+    with local.cwd(dst):
+        run_copy(src_path=str(src))
+        git_save()
+
+    with local.cwd(src):
+        git("tag", "v2")
+    with local.cwd(dst):
+        run_update(
+            defaults=True,
+            overwrite=True,
+            unsafe=True,
+            rollback_on_failure=True,
+        )
+
+    assert (dst / "step1").exists()

@@ -166,6 +166,10 @@ class Task:
         cmd:
             Command to execute.
 
+        rollback_cmd:
+            Command to execute when rolling back the task.
+            Only used for migrations.
+
         extra_vars:
             Additional variables for the task.
             Will be available as Jinja variables for rendering of `cmd`, `condition`
@@ -183,6 +187,7 @@ class Task:
     """
 
     cmd: str | Sequence[str]
+    rollback_cmd: str | Sequence[str] | None = None
     extra_vars: dict[str, Any] = field(default_factory=dict)
     condition: str | bool = True
     working_directory: Path = Path()
@@ -437,6 +442,7 @@ class Template:
                 else:
                     condition = migration.get("when", default_condition)
                     working_directory = Path(migration.get("working_directory", "."))
+                    rollback_cmd = migration.get("rollback")
                     if "version" in migration:
                         current = parse(migration["version"])
                         if not (self.version >= current > from_template.version):
@@ -449,6 +455,7 @@ class Template:
                     result.append(
                         Task(
                             cmd=migration["command"],
+                            rollback_cmd=rollback_cmd,
                             extra_vars=extra_vars,
                             condition=condition,
                             working_directory=working_directory,
